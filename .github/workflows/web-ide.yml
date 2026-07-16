@@ -485,17 +485,25 @@ jobs:
           </html>
           DASHBOARD
 
-      - name: 🚀 Khởi động Web IDE + Dashboard
+      - name: Khởi động Web IDE
         run: |
-          # Source ESP-IDF
-          echo "source ~/esp/esp-idf/export.sh" >> ~/.bashrc
-          
-          # Chạy code-server trên port 8080
+          source $HOME/esp-idf/export.sh
           code-server --bind-addr 0.0.0.0:8080 --auth none &
           sleep 5
-          
-          # Chạy dashboard server trên port 3000
-          cd ~
-          python3 -m http.server 3000 &
-          
-          # Tạo Cloudflare tunnel cho dashboard (port 
+    
+          cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/url.txt &
+          sleep 20
+    
+          echo ""
+          echo "========================================="
+          echo "LINK WEB IDE:"
+          grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/url.txt | head -1
+          echo "========================================="
+          echo ""
+          echo "Web IDE sẵn sàng! Đợi 6 tiếng..."
+    
+          #Giữ workflow sống 6 tiếng
+          for i in $(seq 1 360); do
+          sleep 60
+          echo "⏰ Đã chạy: ${i} phút / 360 phút"
+          done
