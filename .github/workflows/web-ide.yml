@@ -30,8 +30,8 @@ jobs:
           ./install.sh esp32
           echo "✅ ESP-IDF v4.1 OK"
 
-       - name: 📦 Cài code-server + Extensions
-         run: |
+      - name: 📦 Cài code-server + Extensions
+        run: |
             curl -fsSL https://code-server.dev/install.sh | sh
             mkdir -p ~/.config/code-server
             cat > ~/.config/code-server/config.yaml << 'EOF'
