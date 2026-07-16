@@ -19,16 +19,16 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v3
 
-      - name: 🔧 Cài ESP-IDF v4.1 + Python 3.8
+      - name: Cai ESP-IDF
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3 python3-pip git wget curl jq unzip
-          mkdir -p ~/esp
-          cd ~/esp
-          git clone -b v4.1 --recursive --depth 1 https://github.com/espressif/esp-idf.git
+          sudo apt update -qq
+          sudo apt install -y -qq git wget python3 python3-pip python3-venv python3-setuptools
+          pip3 install --upgrade pip setuptools wheel
+          cd $HOME
+          git clone -b v4.1 --depth 1 --recursive https://github.com/espressif/esp-idf.git
           cd esp-idf
           ./install.sh esp32
-          echo "✅ ESP-IDF v4.1 OK"
+          echo "source $HOME/esp-idf/export.sh" >> $HOME/.bashrc
 
       - name: 📦 Cài code-server + Extensions
         run: |
