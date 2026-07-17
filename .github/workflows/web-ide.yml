@@ -55,7 +55,7 @@ jobs:
 
       - name: 🌍 Mở Cloudflare Tunnel
         run: |
-          cloudflared tunnel --url http://localhost:3000 2>&1 | tee /tmp/tunnel.log &
+          cloudflared tunnel --url http://localhost:3030 2>&1 | tee /tmp/tunnel.log &
           sleep 15
 
           URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
