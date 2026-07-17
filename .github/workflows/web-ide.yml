@@ -18,6 +18,7 @@ jobs:
       # Đặt secret WEB_PASSWORD trong: Repo Settings → Secrets and variables → Actions
       WEB_PASSWORD: ${{ secrets.WEB_PASSWORD }}
       WORK_DIR: ${{ github.workspace }}
+      PORT: 3030
 
     steps:
       - name: 📥 Checkout code cần build
@@ -40,37 +41,66 @@ jobs:
           ./install.sh esp32,esp32s2,esp32s3,esp32c3
           echo "source $HOME/esp-idf/export.sh" >> "$HOME/.bashrc"
 
-      - name: 📦 Cài Cloudflare Tunnel
+      - name: 📦 Cài ZeroTier
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          curl -s https://install.zerotier.com | sudo bash
+          sudo zerotier-cli status || echo "ZeroTier installed"
+
+      - name: 🌐 Kết nối ZeroTier Network
+        run: |
+          # Join network với Network ID: b103a835d2b3a8b0
+          sudo zerotier-cli join b103a835d2b3a8b0
+          sleep 5
+          echo "✅ Đã join ZeroTier Network: b103a835d2b3a8b0"
+          sudo zerotier-cli listnetworks
+
+      - name: 🔍 Lấy IP ZeroTier
+        run: |
+          sleep 5
+          ZT_IP=$(ip -4 addr show zt* | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+          echo "ZT_IP=$ZT_IP" >> $GITHUB_ENV
+          echo "📡 IP ZeroTier: $ZT_IP"
 
       - name: 🚀 Khởi động Web IDE server (có xác thực)
         run: |
           python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
-          sleep 3
+          sleep 5
           echo "Server log ban đầu:"
           cat /tmp/server.log
+          echo ""
+          echo "🔍 Kiểm tra server:"
+          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" http://localhost:${{ env.PORT }} || echo "⚠️ Server chưa sẵn sàng"
 
-      - name: 🌍 Mở Cloudflare Tunnel
+      - name: 🔗 Hiển thị link truy cập
         run: |
-          cloudflared tunnel --url http://localhost:3030 2>&1 | tee /tmp/tunnel.log &
-          sleep 15
-
-          URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
-
+          ZT_IP=$(ip -4 addr show zt* | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+          
           echo ""
           echo "========================================="
-          echo "🔗 LINK WEB IDE: $URL"
+          echo "🔗 LINK WEB IDE: http://$ZT_IP:${{ env.PORT }}"
           echo "🔑 Mật khẩu: đã lưu trong GitHub Secret WEB_PASSWORD"
+          echo "🌐 Network ID: b103a835d2b3a8b0"
           echo "========================================="
+          echo ""
+          echo "⚠️ LƯU Ý:"
+          echo "1. Cài ZeroTier trên máy bạn: https://www.zerotier.com/download/"
+          echo "2. Join network: zerotier-cli join b103a835d2b3a8b0"
+          echo "3. Authorize IP trong ZeroTier Central"
+          echo "4. Truy cập link http://$ZT_IP:${{ env.PORT }}"
           echo ""
           echo "Web IDE sẵn sàng, sẽ tự tắt sau ${{ github.event.inputs.run_hours }} tiếng..."
 
+      - name: ⏰ Giữ workflow chạy
+        run: |
           HOURS="${{ github.event.inputs.run_hours }}"
           MINUTES=$((HOURS * 60))
           for i in $(seq 1 "$MINUTES"); do
             sleep 60
+            # Kiểm tra server vẫn chạy
+            if ! curl -s -o /dev/null http://localhost:${{ env.PORT }}; then
+              echo "⚠️ Server đã dừng! Thử restart..."
+              python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
+              sleep 3
+            fi
             echo "⏰ Đã chạy: ${i} / ${MINUTES} phút"
           done
