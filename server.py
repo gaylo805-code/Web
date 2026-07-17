@@ -13,27 +13,17 @@ import secrets
 import subprocess
 import time
 import urllib.parse
-import threading
-import queue
 from pathlib import Path
 
 WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
-PORT = int(os.environ.get("PORT", 3030))  # 👈 PORT AN TOÀN: 3030
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
 # Danh sách target hợp lệ cho build (tránh nhận chuỗi tùy ý)
 ALLOWED_TARGETS = {"esp32", "esp32s2", "esp32s3", "esp32c3"}
 
-# Danh sách lệnh nguy hiểm bị cấm (chống hack)
-DANGEROUS_COMMANDS = ["rm -rf", "sudo", "chmod", "chown", "mkfs", "dd if", ":(){", "> /dev/sda"]
-
 # token -> hết hạn (epoch)
 _sessions = {}
-
-# Queue cho build log (streaming)
-_build_logs = {}
-_build_status = {}
 
 
 def new_session():
@@ -66,7 +56,6 @@ def ensure_esp_project():
     base = Path(WORK_DIR).resolve()
     print(f"📁 Đảm bảo project ESP-IDF trong: {base}")
 
-    # Tạo CMakeLists.txt gốc
     cmake_file = base / "CMakeLists.txt"
     if not cmake_file.exists():
         cmake_file.write_text("""cmake_minimum_required(VERSION 3.10)
@@ -75,18 +64,15 @@ project(dns_sniffer)
 """)
         print("✅ Đã tạo CMakeLists.txt")
 
-    # Tạo thư mục main
     main_dir = base / "main"
     main_dir.mkdir(exist_ok=True)
 
-    # Tạo main/CMakeLists.txt
     main_cmake = main_dir / "CMakeLists.txt"
     if not main_cmake.exists():
         main_cmake.write_text("""idf_component_register(SRCS "main.c" "dns_sniffer.c")
 """)
         print("✅ Đã tạo main/CMakeLists.txt")
 
-    # Tạo main/main.c (mẫu)
     main_c = main_dir / "main.c"
     if not main_c.exists():
         main_c.write_text("""#include <stdio.h>
@@ -105,7 +91,6 @@ void app_main(void) {
 """)
         print("✅ Đã tạo main/main.c")
 
-    # Tạo main/dns_sniffer.h (mẫu)
     main_h = main_dir / "dns_sniffer.h"
     if not main_h.exists():
         main_h.write_text("""#ifndef DNS_SNIFFER_H
@@ -117,7 +102,6 @@ void init_dns_sniffer(void);
 """)
         print("✅ Đã tạo main/dns_sniffer.h")
 
-    # Tạo main/dns_sniffer.c (mẫu)
     main_c2 = main_dir / "dns_sniffer.c"
     if not main_c2.exists():
         main_c2.write_text("""#include <stdio.h>
@@ -129,7 +113,6 @@ void init_dns_sniffer(void) {
 """)
         print("✅ Đã tạo main/dns_sniffer.c")
 
-    # Tạo sdkconfig mặc định
     sdkconfig = base / "sdkconfig"
     if not sdkconfig.exists():
         sdkconfig.write_text("""CONFIG_ESP32_REV_MIN=0
@@ -138,84 +121,8 @@ CONFIG_ESP32_XTAL_FREQ_40=y
 CONFIG_ESP32_PHY_MAX_WIFI_TX_POWER=20
 CONFIG_ESPTOOLPY_FLASHSIZE=4MB
 CONFIG_PARTITION_TABLE_SINGLE_APP=y
-CONFIG_ESPTOOLPY_BEFORE_RESET=no_reset
-CONFIG_ESPTOOLPY_AFTER_RESET=no_reset
 """)
         print("✅ Đã tạo sdkconfig")
-
-
-def run_build_with_logging(target, log_queue):
-    """Chạy build và gửi log qua queue để streaming"""
-    try:
-        log_queue.put(f"🔨 Bắt đầu build cho {target}...")
-        log_queue.put(f"📋 Target: {target}")
-        
-        # Clean và set target
-        log_queue.put("🧹 Cleaning previous build...")
-        clean_result = subprocess.run(
-            ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py fullclean"],
-            cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
-        )
-        if clean_result.stdout:
-            log_queue.put(clean_result.stdout[-500:])
-        
-        log_queue.put(f"🎯 Setting target: {target}")
-        set_target_result = subprocess.run(
-            ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target}"],
-            cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
-        )
-        if set_target_result.stdout:
-            log_queue.put(set_target_result.stdout[-500:])
-        if set_target_result.stderr:
-            log_queue.put(set_target_result.stderr[-500:])
-        
-        # Build
-        log_queue.put("🔨 Building firmware... (có thể mất vài phút)")
-        
-        # Build với Popen để stream log real-time
-        process = subprocess.Popen(
-            ["bash", "-lc", "source ~/esp-idf/export.sh && idf.py build"],
-            cwd=WORK_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        
-        # Đọc output và gửi vào queue
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                log_queue.put(line.strip())
-        
-        process.wait()
-        
-        if process.returncode == 0:
-            log_queue.put("✅ Build thành công!")
-            
-            # Kiểm tra file build
-            build_dir = Path(WORK_DIR) / "build"
-            files = []
-            for f in build_dir.rglob("*.bin"):
-                files.append(str(f.relative_to(build_dir)))
-            
-            if files:
-                log_queue.put(f"📦 Đã tạo {len(files)} file .bin:")
-                for f in files:
-                    log_queue.put(f"  - {f}")
-            else:
-                log_queue.put("⚠️ Không tìm thấy file .bin nào!")
-            
-            log_queue.put("✅ DONE")
-        else:
-            log_queue.put(f"❌ Build thất bại với mã lỗi: {process.returncode}")
-            log_queue.put("❌ FAILED")
-            
-    except subprocess.TimeoutExpired:
-        log_queue.put("⏰ Build quá thời gian cho phép (600 giây)")
-        log_queue.put("❌ FAILED")
-    except Exception as e:
-        log_queue.put(f"❌ Lỗi: {str(e)}")
-        log_queue.put("❌ FAILED")
 
 
 class APIHandler(http.server.SimpleHTTPRequestHandler):
@@ -244,12 +151,10 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
-        # Chuyển hướng root đến login/dashboard
         if parsed.path == "/":
             self.path = "/login.html" if not self._authorized() else "/dashboard.html"
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
 
-        # ============ LIST FILES ============
         if parsed.path == "/files":
             if not self._require_auth():
                 return
@@ -260,7 +165,6 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, files)
             return
 
-        # ============ READ FILE ============
         if parsed.path == "/file":
             if not self._require_auth():
                 return
@@ -279,31 +183,22 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(404, {"error": "Không tìm thấy file"})
             return
 
-        # ============ DOWNLOAD FIRMWARE ============
         if parsed.path == "/download":
             if not self._require_auth():
                 return
-            
             params = urllib.parse.parse_qs(parsed.query)
             filename = params.get("file", ["dns_sniffer.bin"])[0]
-            
-            # Chỉ cho phép tải các file .bin từ thư mục build
             if not filename.endswith(".bin"):
                 self._send_json(400, {"error": "Chỉ cho phép tải file .bin"})
                 return
-            
-            # Chặn path traversal
             try:
                 filepath = safe_path("build/" + filename)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            
             if not os.path.exists(filepath):
                 self._send_json(404, {"error": "Không tìm thấy file firmware"})
                 return
-            
-            # Gửi file về client
             try:
                 with open(filepath, "rb") as f:
                     content = f.read()
@@ -317,38 +212,24 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
             return
 
-        # ============ CHECK BUILD FILES ============
         if parsed.path == "/check_build_files":
             if not self._require_auth():
                 return
-            
             build_dir = Path(WORK_DIR) / "build"
             files = []
-            
-            # Kiểm tra các file build quan trọng
             check_files = [
                 ("dns_sniffer.bin", "Firmware"),
                 ("partition_table/partition-table.bin", "Partition Table"),
                 ("bootloader/bootloader.bin", "Bootloader")
             ]
-            
             for rel_path, display_name in check_files:
                 full_path = build_dir / rel_path
-                if full_path.exists():
-                    files.append({
-                        "name": rel_path,
-                        "display_name": display_name,
-                        "size": full_path.stat().st_size,
-                        "exists": True
-                    })
-                else:
-                    files.append({
-                        "name": rel_path,
-                        "display_name": display_name,
-                        "exists": False
-                    })
-            
-            # Tìm thêm các file .bin khác
+                files.append({
+                    "name": rel_path,
+                    "display_name": display_name,
+                    "size": full_path.stat().st_size if full_path.exists() else 0,
+                    "exists": full_path.exists()
+                })
             for f in build_dir.rglob("*.bin"):
                 rel = str(f.relative_to(build_dir))
                 if rel not in [f["name"] for f in files]:
@@ -358,37 +239,9 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                         "size": f.stat().st_size,
                         "exists": True
                     })
-            
             self._send_json(200, {"files": files})
             return
 
-        # ============ GET BUILD LOG (streaming) ============
-        if parsed.path == "/build_log":
-            if not self._require_auth():
-                return
-            
-            # Lấy log từ queue
-            log_lines = []
-            if hasattr(self, '_build_log_queue'):
-                while not self._build_log_queue.empty():
-                    try:
-                        log_lines.append(self._build_log_queue.get_nowait())
-                    except:
-                        break
-            
-            # Kiểm tra trạng thái build
-            status = "building"
-            if hasattr(self, '_build_done'):
-                status = "done" if self._build_done else "failed"
-            
-            self._send_json(200, {
-                "logs": log_lines,
-                "status": status,
-                "is_building": not hasattr(self, '_build_done') or not self._build_done
-            })
-            return
-
-        # ============ PHỤC VỤ FILE TĨNH ============
         try:
             if parsed.path.startswith("/.") or "/." in parsed.path:
                 self.send_response(403)
@@ -403,10 +256,6 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_header("Content-Type", "text/css")
                 elif parsed.path.endswith(".js"):
                     self.send_header("Content-Type", "application/javascript")
-                elif parsed.path.endswith(".png"):
-                    self.send_header("Content-Type", "image/png")
-                elif parsed.path.endswith(".ico"):
-                    self.send_header("Content-Type", "image/x-icon")
                 else:
                     self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Content-Length", str(len(content)))
@@ -428,7 +277,6 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
         except json.JSONDecodeError:
             data = {}
 
-        # ============ LOGIN (không cần auth) ============
         if parsed.path == "/login":
             password = data.get("password", "")
             if not WEB_PASSWORD:
@@ -441,7 +289,6 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(401, {"error": "Sai mật khẩu"})
             return
 
-        # ============ LOGOUT (không cần auth) ============
         if parsed.path == "/logout":
             auth = self.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
@@ -449,98 +296,42 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, {"message": "Đã đăng xuất"})
             return
 
-        # ============ TẤT CẢ CÁC ENDPOINT CÒN LẠI CẦN AUTH ============
         if not self._require_auth():
             return
 
-        # ============ TERMINAL ============
-        if parsed.path == "/exec":
-            command = data.get("command", "").strip()
-            if not command:
-                self._send_json(400, {"success": False, "error": "Không có lệnh"})
-                return
-            
-            # 🔒 Chặn lệnh nguy hiểm
-            if any(cmd in command for cmd in DANGEROUS_COMMANDS):
-                self._send_json(403, {"success": False, "error": "Lệnh không được phép (bị chặn vì lý do bảo mật)"})
-                return
-            
-            # Chỉ cho chạy tối đa 30 giây
-            try:
-                result = subprocess.run(
-                    ["bash", "-c", command],
-                    cwd=WORK_DIR,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                self._send_json(200, {
-                    "success": True,
-                    "output": result.stdout[-5000:] if result.stdout else "",
-                    "error": result.stderr[-2000:] if result.stderr else "",
-                    "returncode": result.returncode
-                })
-            except subprocess.TimeoutExpired:
-                self._send_json(408, {"success": False, "error": "Lệnh chạy quá 30 giây, bị dừng"})
-            except Exception as e:
-                self._send_json(500, {"success": False, "error": str(e)})
-            return
-
-        # ============ BUILD FIRMWARE ============
         if parsed.path == "/build":
             target = data.get("target", "esp32")
             if target not in ALLOWED_TARGETS:
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
-            
-            # Đảm bảo project đã được tạo
-            ensure_esp_project()
-            
-            # Tạo queue cho log
-            log_queue = queue.Queue()
-            self._build_log_queue = log_queue
-            self._build_done = False
-            
-            # Chạy build trong thread riêng
-            def run_build():
-                try:
-                    run_build_with_logging(target, log_queue)
-                    self._build_done = True
-                except Exception as e:
-                    log_queue.put(f"❌ Lỗi: {str(e)}")
-                    log_queue.put("❌ FAILED")
-                    self._build_done = True
-            
-            thread = threading.Thread(target=run_build)
-            thread.daemon = True
-            thread.start()
-            
-            self._send_json(200, {
-                "success": True,
-                "message": "Build đang chạy",
-                "target": target
-            })
+            try:
+                ensure_esp_project()
+                result = subprocess.run(
+                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target} && idf.py build"],
+                    cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
+                )
+                success = result.returncode == 0
+                self._send_json(200, {
+                    "success": success,
+                    "output": result.stdout[-4000:],
+                    "error": result.stderr[-2000:] if not success else "",
+                    "bin": "build/dns_sniffer.bin" if success else "",
+                })
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
             return
 
-        # ============ CLEAN ============
         if parsed.path == "/clean":
             try:
                 result = subprocess.run(
                     ["bash", "-lc", "source ~/esp-idf/export.sh && idf.py fullclean"],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
                 )
-                # Xóa build logs
-                if hasattr(self, '_build_log_queue'):
-                    delattr(self, '_build_log_queue')
-                if hasattr(self, '_build_done'):
-                    delattr(self, '_build_done')
-                
                 self._send_json(200, {"success": result.returncode == 0, "output": result.stdout[-2000:]})
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
             return
 
-        # ============ SAVE FILE ============
         if parsed.path == "/save":
             name = data.get("name", "")
             content = data.get("content", "")
@@ -552,4 +343,52 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as f:
                 f.write(content)
-            self._send_json
+            self._send_json(200, {"message": f"Đã lưu {name}"})
+            return
+
+        if parsed.path == "/upload":
+            name = data.get("name", "")
+            content = data.get("content", "")
+            try:
+                filepath = safe_path(name)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w") as f:
+                f.write(content)
+            self._send_json(200, {"message": f"Đã upload {name}"})
+            return
+
+        self._send_json(404, {"error": "Không tìm thấy endpoint"})
+
+    def do_DELETE(self):
+        if not self._require_auth():
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/delete":
+            params = urllib.parse.parse_qs(parsed.query)
+            name = params.get("name", [""])[0]
+            try:
+                filepath = safe_path(name)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                self._send_json(200, {"message": f"Đã xóa {name}"})
+            else:
+                self._send_json(404, {"error": "Không tìm thấy file"})
+            return
+        self._send_json(404, {"error": "Không tìm thấy endpoint"})
+
+
+if __name__ == "__main__":
+    ensure_esp_project()
+    if not WEB_PASSWORD:
+        print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt")
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    PORT = int(os.environ.get("PORT", 9999))  # 👈 PORT 9999
+    server = http.server.HTTPServer(("0.0.0.0", PORT), APIHandler)
+    print(f"✅ Web IDE server đang chạy tại port {PORT}")
+    server.serve_forever()
