@@ -1,9 +1,9 @@
-name: 🌐 ESP32 Web IDE Online
+name: 🌐 ESP32 Web IDE (có mật khẩu)
 
 on:
   workflow_dispatch:
     inputs:
-      build_time:
+      run_hours:
         description: 'Thời gian chạy (giờ)'
         required: true
         default: '6'
@@ -12,70 +12,33 @@ on:
 
 jobs:
   web-ide:
-    runs-on: ubuntu-latest    
+    runs-on: ubuntu-latest
     timeout-minutes: 360
-    
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v3
+    env:
+      # Đặt secret WEB_PASSWORD trong: Repo Settings → Secrets and variables → Actions
+      WEB_PASSWORD: ${{ secrets.WEB_PASSWORD }}
+      WORK_DIR: ${{ github.workspace }}
 
-      - name: Cai ESP-IDF
+    steps:
+      - name: 📥 Checkout code cần build
+        uses: actions/checkout@v4
+
+      - name: ⛔ Kiểm tra đã có mật khẩu chưa
+        run: |
+          if [ -z "$WEB_PASSWORD" ]; then
+            echo "::error::Chưa cấu hình secret WEB_PASSWORD. Vào Settings > Secrets and variables > Actions để thêm."
+            exit 1
+          fi
+
+      - name: 🔧 Cài ESP-IDF
         run: |
           sudo apt update -qq
-          sudo apt install -y -qq git wget python3 python3-pip python3-venv python3-setuptools
-          pip3 install --upgrade pip setuptools wheel
-          cd $HOME
-          git clone -b v4.1 --depth 1 --recursive https://github.com/espressif/esp-idf.git
+          sudo apt install -y -qq git wget python3 python3-pip python3-venv
+          cd "$HOME"
+          git clone -b v5.3 --depth 1 --recursive https://github.com/espressif/esp-idf.git
           cd esp-idf
-          ./install.sh esp32
-          echo "source $HOME/esp-idf/export.sh" >> $HOME/.bashrc
-         
-      - name: Build Python 3.8.20
-        run: |
-          sudo apt update
-          sudo apt install -y \
-          build-essential \
-          wget \
-          curl \
-          libssl-dev \
-          zlib1g-dev \
-          libbz2-dev \
-          libreadline-dev \
-          libsqlite3-dev \
-          libffi-dev \
-          libncursesw5-dev \
-          xz-utils \
-          tk-dev \
-          libxml2-dev \
-          libxmlsec1-dev \
-          liblzma-dev
-
-          cd $HOME
-
-          wget https://www.python.org/ftp/python/3.8.20/Python-3.8.20.tgz
-          tar -xf Python-3.8.20.tgz
-
-          cd Python-3.8.20
-
-          ./configure \
-          --prefix=$HOME/python38 \
-          --enable-optimizations
-
-          make -j$(nproc)
-          make install
-
-          $HOME/python38/bin/python3.8 --version
-      
-      - name: 📦 Cài code-server + Extensions
-        run: |
-            curl -fsSL https://code-server.dev/install.sh | sh
-            mkdir -p ~/.config/code-server
-            cat > ~/.config/code-server/config.yaml << 'EOF'
-            bind-addr: 0.0.0.0:8080
-            auth: none
-            cert: false
-            disable-telemetry: true
-            EOF
+          ./install.sh esp32,esp32s2,esp32s3,esp32c3
+          echo "source $HOME/esp-idf/export.sh" >> "$HOME/.bashrc"
 
       - name: 📦 Cài Cloudflare Tunnel
         run: |
@@ -83,463 +46,31 @@ jobs:
           chmod +x cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
 
-      - name: 🎨 Tạo Web Dashboard đẹp
+      - name: 🚀 Khởi động Web IDE server (có xác thực)
         run: |
-          cat > ~/dashboard.html << 'DASHBOARD'
-          <!DOCTYPE html>
-          <html lang="vi">
-          <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>🔍 ESP32 DNS Sniffer - Web IDE</title>
-          <style>
-          *{margin:0;padding:0;box-sizing:border-box}
-          body{
-            background: linear-gradient(135deg, #0a0e27 0%, #1a0a2e 50%, #0a0e27 100%);
-            color:#e0e6ff;
-            font-family:'Segoe UI',sans-serif;
-            min-height:100vh;
-          }
-          .container{max-width:1200px;margin:0 auto;padding:20px}
-          
-          .header{
-            background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding:30px;border-radius:20px;margin-bottom:30px;
-            box-shadow:0 20px 60px rgba(102,126,234,0.3);
-            text-align:center;
-          }
-          .header h1{font-size:2.5em;text-shadow:2px 2px 4px rgba(0,0,0,0.3)}
-          .header .badge{
-            display:inline-block;background:rgba(255,255,255,0.2);
-            padding:5px 15px;border-radius:20px;margin:5px;
-            font-size:0.9em;
-          }
-          
-          .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-bottom:30px}
-          
-          .card{
-            background:rgba(26,31,58,0.8);border:1px solid #2a2f4a;
-            border-radius:15px;padding:25px;
-            backdrop-filter:blur(10px);
-            transition:all 0.3s;
-          }
-          .card:hover{transform:translateY(-5px);box-shadow:0 15px 30px rgba(0,0,0,0.3)}
-          .card h2{color:#64ffda;margin-bottom:15px;font-size:1.3em}
-          .card .icon{font-size:2em;margin-bottom:10px}
-          
-          .btn{
-            padding:12px 24px;border:none;border-radius:10px;
-            font-size:1em;font-weight:600;cursor:pointer;
-            transition:all 0.3s;margin:5px;
-            display:inline-flex;align-items:center;gap:8px;
-          }
-          .btn:hover{transform:scale(1.05)}
-          .btn:active{transform:scale(0.95)}
-          .btn-primary{background:#7c4dff;color:white}
-          .btn-success{background:#69f0ae;color:#0a0e27}
-          .btn-danger{background:#ff5252;color:white}
-          .btn-warning{background:#ffd740;color:#0a0e27}
-          
-          .upload-zone{
-            border:3px dashed #2a2f4a;border-radius:15px;
-            padding:40px;text-align:center;cursor:pointer;
-            transition:all 0.3s;background:rgba(0,0,0,0.2);
-          }
-          .upload-zone:hover{border-color:#64ffda;background:rgba(100,255,218,0.05)}
-          .upload-zone.dragover{border-color:#7c4dff;background:rgba(124,77,255,0.1)}
-          
-          #fileList{max-height:300px;overflow-y:auto;margin-top:15px}
-          .file-item{
-            display:flex;justify-content:space-between;align-items:center;
-            padding:10px;background:rgba(0,0,0,0.2);border-radius:8px;
-            margin:5px 0;
-          }
-          .file-item .name{color:#64ffda;flex:1}
-          .file-item .size{color:#8892b0;margin:0 10px;font-size:0.9em}
-          .file-item .actions{display:flex;gap:5px}
-          
-          .terminal{
-            background:#000;border-radius:10px;padding:20px;
-            font-family:'Courier New',monospace;color:#64ffda;
-            max-height:400px;overflow-y:auto;white-space:pre-wrap;
-            border:1px solid #2a2f4a;
-          }
-          .terminal .command{color:#ffd740}
-          .terminal .output{color:#8892b0}
-          .terminal .error{color:#ff5252}
-          .terminal .success{color:#69f0ae}
-          
-          input[type="text"],textarea{
-            width:100%;padding:12px;background:rgba(0,0,0,0.3);
-            border:2px solid #2a2f4a;border-radius:10px;
-            color:#e0e6ff;font-size:1em;
-            transition:border-color 0.3s;
-          }
-          input[type="text"]:focus,textarea:focus{
-            outline:none;border-color:#64ffda;
-          }
-          textarea{
-            min-height:200px;font-family:'Courier New',monospace;
-            resize:vertical;
-          }
-          
-          .status-bar{
-            position:fixed;bottom:0;left:0;right:0;
-            background:rgba(10,14,39,0.9);padding:10px 20px;
-            display:flex;justify-content:space-between;
-            border-top:1px solid #2a2f4a;
-          }
-          .status-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
-          .status-dot.online{background:#69f0ae;animation:pulse 2s infinite}
-          
-          @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-          
-          .toast{
-            position:fixed;top:20px;right:20px;
-            padding:15px 25px;border-radius:10px;
-            font-weight:600;z-index:1000;
-            animation:slideIn 0.3s ease;
-          }
-          .toast.success{background:#69f0ae;color:#0a0e27}
-          .toast.error{background:#ff5252;color:white}
-          
-          @keyframes slideIn{from{transform:translateX(400px)}to{transform:translateX(0)}}
-          
-          .loading{text-align:center;padding:20px}
-          .spinner{
-            width:40px;height:40px;border:4px solid #2a2f4a;
-            border-top-color:#64ffda;border-radius:50%;
-            animation:spin 1s linear infinite;margin:0 auto;
-          }
-          @keyframes spin{to{transform:rotate(360deg)}}
-          </style>
-          </head>
-          <body>
-          <div class="container">
-          
-          <div class="header">
-            <h1>🔍 ESP32 DNS Sniffer - Web IDE</h1>
-            <p>Build · Upload · Flash · Monitor</p>
-            <span class="badge">🐍 Python 3.8</span>
-            <span class="badge">🔧 ESP-IDF v4.1</span>
-            <span class="badge">💾 ESP32</span>
-            <span class="badge" id="statusBadge">🟢 Online</span>
-          </div>
-          
-          <div class="grid">
-          
-          <!-- Upload File -->
-          <div class="card">
-            <div class="icon">📤</div>
-            <h2>Upload File</h2>
-            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
-              <div style="font-size:3em">📁</div>
-              <p>Kéo thả file vào đây hoặc Click để chọn</p>
-              <p style="color:#8892b0;font-size:0.9em">Hỗ trợ: .c, .h, .cpp, .txt, .bin</p>
-            </div>
-            <input type="file" id="fileInput" multiple style="display:none" accept=".c,.h,.cpp,.txt,.bin,.csv,.cmake">
-            <div id="fileList"></div>
-            <div id="uploadProgress" style="margin-top:10px"></div>
-          </div>
-          
-          <!-- Build -->
-          <div class="card">
-            <div class="icon">🏗️</div>
-            <h2>Build Firmware</h2>
-            <input type="text" id="buildTarget" placeholder="Target (esp32/esp32s2/esp32s3)" value="esp32">
-            <div style="margin-top:15px;display:flex;flex-wrap:wrap;gap:10px">
-              <button class="btn btn-primary" onclick="buildFirmware()">
-                🔨 Build
-              </button>
-              <button class="btn btn-success" onclick="flashFirmware()">
-                ⚡ Flash
-              </button>
-              <button class="btn btn-warning" onclick="monitorSerial()">
-                📺 Monitor
-              </button>
-              <button class="btn btn-danger" onclick="cleanBuild()">
-                🧹 Clean
-              </button>
-            </div>
-            <div style="margin-top:15px">
-              <label style="color:#8892b0">Serial Port:</label>
-              <input type="text" id="serialPort" placeholder="/dev/ttyUSB0" value="/dev/ttyUSB0">
-            </div>
-          </div>
-          
-          <!-- Code Editor -->
-          <div class="card" style="grid-column:span 2">
-            <div class="icon">📝</div>
-            <h2>Code Editor</h2>
-            <div style="display:flex;gap:10px;margin-bottom:10px">
-              <input type="text" id="fileName" placeholder="main/main.c" value="main/main.c">
-              <button class="btn btn-primary" onclick="loadFile()">📂 Mở</button>
-              <button class="btn btn-success" onclick="saveFile()">💾 Lưu</button>
-              <button class="btn btn-warning" onclick="newFile()">➕ File mới</button>
-            </div>
-            <textarea id="codeEditor" placeholder="// Viết code ESP32 ở đây..."></textarea>
-          </div>
-          
-          <!-- Terminal -->
-          <div class="card" style="grid-column:span 2">
-            <div class="icon">💻</div>
-            <h2>Terminal Output</h2>
-            <div class="terminal" id="terminal">
-          <span class="success">✅ ESP-IDF v4.1 đã sẵn sàng</span>
-          <span class="output">Đang chờ lệnh build...</span>
-            </div>
-            <div style="margin-top:10px;display:flex;gap:10px">
-              <input type="text" id="commandInput" placeholder="Nhập lệnh (vd: idf.py build)" onkeypress="if(event.key==='Enter')executeCommand()">
-              <button class="btn btn-primary" onclick="executeCommand()">▶️ Chạy</button>
-              <button class="btn btn-danger" onclick="clearTerminal()">🗑️ Clear</button>
-            </div>
-          </div>
-          
-          </div>
-          </div>
-          
-          <div class="status-bar">
-            <span><span class="status-dot online"></span> ESP32 Web IDE</span>
-            <span>Cloudflare Tunnel</span>
-            <span id="clock"></span>
-          </div>
-          
-          <div id="toastContainer"></div>
-          
-          <script>
-          // Upload file
-          const uploadZone = document.getElementById('uploadZone');
-          const fileInput = document.getElementById('fileInput');
-          const fileList = document.getElementById('fileList');
-          
-          uploadZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadZone.classList.add('dragover');
-          });
-          
-          uploadZone.addEventListener('dragleave', () => {
-            uploadZone.classList.remove('dragover');
-          });
-          
-          uploadZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadZone.classList.remove('dragover');
-            handleFiles(e.dataTransfer.files);
-          });
-          
-          fileInput.addEventListener('change', (e) => {
-            handleFiles(e.target.files);
-          });
-          
-          function handleFiles(files) {
-            Array.from(files).forEach(file => {
-              const reader = new FileReader();
-              reader.onload = function(e) {
-                const content = e.target.result;
-                // Gửi file lên server
-                fetch('/upload', {
-                  method: 'POST',
-                  headers: {'Content-Type': 'application/json'},
-                  body: JSON.stringify({
-                    name: file.name,
-                    content: content,
-                    size: file.size
-                  })
-                }).then(r => r.json()).then(data => {
-                  showToast(data.message || 'Upload OK', 'success');
-                  refreshFileList();
-                });
-              };
-              reader.readAsText(file);
-            });
-          }
-          
-          function refreshFileList() {
-            fetch('/files').then(r => r.json()).then(files => {
-              fileList.innerHTML = files.map(f => `
-                <div class="file-item">
-                  <span class="name">📄 ${f.name}</span>
-                  <span class="size">${formatSize(f.size)}</span>
-                  <div class="actions">
-                    <button class="btn btn-primary" style="padding:5px 10px;font-size:0.8em" onclick="editFile('${f.name}')">✏️</button>
-                    <button class="btn btn-danger" style="padding:5px 10px;font-size:0.8em" onclick="deleteFile('${f.name}')">🗑️</button>
-                  </div>
-                </div>
-              `).join('');
-            });
-          }
-          
-          function formatSize(bytes) {
-            if(bytes < 1024) return bytes + ' B';
-            if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
-            return (bytes/(1024*1024)).toFixed(1) + ' MB';
-          }
-          
-          // Build
-          async function buildFirmware() {
-            const target = document.getElementById('buildTarget').value;
-            appendTerminal(`🔨 Bắt đầu build cho ${target}...`, 'command');
-            
-            try {
-              const res = await fetch('/build', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({target: target})
-              });
-              const data = await res.json();
-              
-              if(data.success) {
-                appendTerminal(data.output, 'output');
-                appendTerminal('✅ Build thành công!', 'success');
-                appendTerminal(`📦 Firmware: ${data.bin}`, 'success');
-                showToast('Build thành công!', 'success');
-              } else {
-                appendTerminal(data.error, 'error');
-                showToast('Build thất bại!', 'error');
-              }
-            } catch(e) {
-              appendTerminal('❌ Lỗi kết nối: ' + e.message, 'error');
-            }
-          }
-          
-          async function flashFirmware() {
-            const port = document.getElementById('serialPort').value;
-            appendTerminal(`⚡ Đang flash firmware qua ${port}...`, 'command');
-            
-            const res = await fetch('/flash', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({port: port})
-            });
-            const data = await res.json();
-            appendTerminal(data.output || data.error, data.success ? 'success' : 'error');
-          }
-          
-          function monitorSerial() {
-            const port = document.getElementById('serialPort').value;
-            appendTerminal(`📺 Mở monitor serial ${port}...`, 'command');
-            
-            const eventSource = new EventSource(`/monitor?port=${port}`);
-            eventSource.onmessage = function(e) {
-              appendTerminal(e.data, 'output');
-            };
-          }
-          
-          async function cleanBuild() {
-            const res = await fetch('/clean', {method: 'POST'});
-            const data = await res.json();
-            appendTerminal(data.output || 'Đã clean', 'success');
-          }
-          
-          // Code Editor
-          async function loadFile() {
-            const fileName = document.getElementById('fileName').value;
-            const res = await fetch(`/file?name=${fileName}`);
-            const data = await res.json();
-            document.getElementById('codeEditor').value = data.content || '';
-          }
-          
-          async function saveFile() {
-            const fileName = document.getElementById('fileName').value;
-            const content = document.getElementById('codeEditor').value;
-            
-            const res = await fetch('/save', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({name: fileName, content: content})
-            });
-            const data = await res.json();
-            showToast(data.message, 'success');
-          }
-          
-          function newFile() {
-            const name = prompt('Tên file mới:');
-            if(name) {
-              document.getElementById('fileName').value = name;
-              document.getElementById('codeEditor').value = '';
-            }
-          }
-          
-          async function editFile(name) {
-            document.getElementById('fileName').value = name;
-            await loadFile();
-          }
-          
-          async function deleteFile(name) {
-            if(confirm(`Xóa ${name}?`)) {
-              const res = await fetch(`/delete?name=${name}`, {method: 'DELETE'});
-              const data = await res.json();
-              showToast(data.message, 'success');
-              refreshFileList();
-            }
-          }
-          
-          // Terminal
-          function appendTerminal(text, type) {
-            const terminal = document.getElementById('terminal');
-            terminal.innerHTML += `<span class="${type}">${text}</span>\n`;
-            terminal.scrollTop = terminal.scrollHeight;
-          }
-          
-          async function executeCommand() {
-            const cmd = document.getElementById('commandInput').value;
-            appendTerminal(`$ ${cmd}`, 'command');
-            
-            const res = await fetch('/exec', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({command: cmd})
-            });
-            const data = await res.json();
-            appendTerminal(data.output || data.error, data.success ? 'output' : 'error');
-            document.getElementById('commandInput').value = '';
-          }
-          
-          function clearTerminal() {
-            document.getElementById('terminal').innerHTML = '';
-          }
-          
-          // Toast
-          function showToast(msg, type) {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.textContent = msg;
-            document.getElementById('toastContainer').appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
-          }
-          
-          // Clock
-          setInterval(() => {
-            document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
-          }, 1000);
-          
-          // Init
-          refreshFileList();
-          document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
-          </script>
-          </body>
-          </html>
-          DASHBOARD
+          python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
+          sleep 3
+          echo "Server log ban đầu:"
+          cat /tmp/server.log
 
-      - name: Khởi động Web IDE
+      - name: 🌍 Mở Cloudflare Tunnel
         run: |
-          source $HOME/esp-idf/export.sh
-          code-server --bind-addr 0.0.0.0:8080 --auth none &
-          sleep 5
-    
-          cloudflared tunnel --url http://localhost:8080 2>&1 | tee /tmp/url.txt &
-          sleep 20
-    
+          cloudflared tunnel --url http://localhost:3000 2>&1 | tee /tmp/tunnel.log &
+          sleep 15
+
+          URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+
           echo ""
           echo "========================================="
-          echo "LINK WEB IDE:"
-          grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/url.txt | head -1
+          echo "🔗 LINK WEB IDE: $URL"
+          echo "🔑 Mật khẩu: đã lưu trong GitHub Secret WEB_PASSWORD"
           echo "========================================="
           echo ""
-          echo "Web IDE sẵn sàng! Đợi 6 tiếng..."
-    
-          #Giữ workflow sống 6 tiếng
-          for i in $(seq 1 360); do
-          sleep 60
-          echo "⏰ Đã chạy: ${i} phút / 360 phút"
+          echo "Web IDE sẵn sàng, sẽ tự tắt sau ${{ github.event.inputs.run_hours }} tiếng..."
+
+          HOURS="${{ github.event.inputs.run_hours }}"
+          MINUTES=$((HOURS * 60))
+          for i in $(seq 1 "$MINUTES"); do
+            sleep 60
+            echo "⏰ Đã chạy: ${i} / ${MINUTES} phút"
           done
