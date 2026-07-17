@@ -58,6 +58,7 @@ body{
 .btn-success{background:#69f0ae;color:#0a0e27}
 .btn-danger{background:#ff5252;color:white}
 .btn-warning{background:#ffd740;color:#0a0e27}
+.btn-download{background:#00bcd4;color:white}
 
 .upload-zone{
   border:3px dashed #2a2f4a;border-radius:15px;
@@ -88,6 +89,64 @@ body{
 .terminal .error{color:#ff5252}
 .terminal .success{color:#69f0ae}
 
+/* Progress Bar */
+.progress-container {
+  width:100%;
+  background:rgba(255,255,255,0.1);
+  border-radius:10px;
+  overflow:hidden;
+  height:25px;
+  margin:10px 0;
+  display:none;
+  position:relative;
+}
+.progress-bar {
+  height:100%;
+  background:linear-gradient(90deg, #7c4dff, #00bcd4, #69f0ae);
+  border-radius:10px;
+  width:0%;
+  transition:width 0.5s ease;
+}
+.progress-text {
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  font-size:0.8em;
+  font-weight:600;
+  color:white;
+  text-shadow:0 0 10px rgba(0,0,0,0.8);
+}
+
+/* Build files list */
+.build-file-item {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:10px 14px;
+  background:rgba(0,0,0,0.3);
+  border-radius:10px;
+  margin:8px 0;
+  border-left:4px solid #69f0ae;
+  animation:fadeIn 0.5s ease;
+}
+.build-file-item .info{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.build-file-item .name{color:#64ffda;font-weight:500}
+.build-file-item .size{color:#8892b0;font-size:0.8em}
+.build-file-item .status-badge{
+  display:inline-block;
+  padding:3px 12px;
+  border-radius:12px;
+  font-size:0.7em;
+  font-weight:600;
+  background:#69f0ae;
+  color:#0a0e27;
+}
+
 input[type="text"],textarea,select{
   width:100%;padding:12px;background:rgba(0,0,0,0.3);
   border:2px solid #2a2f4a;border-radius:10px;
@@ -110,8 +169,10 @@ textarea{
 }
 .status-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
 .status-dot.online{background:#69f0ae;animation:pulse 2s infinite}
+.status-dot.building{background:#ffd740;animation:pulse 0.5s infinite}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 
 .toast{
   position:fixed;top:20px;right:20px;
@@ -121,6 +182,7 @@ textarea{
 }
 .toast.success{background:#69f0ae;color:#0a0e27}
 .toast.error{background:#ff5252;color:white}
+.toast.info{background:#00bcd4;color:white}
 
 @keyframes slideIn{from{transform:translateX(400px)}to{transform:translateX(0)}}
 </style>
@@ -139,6 +201,7 @@ textarea{
 
 <div class="grid">
 
+<!-- ========== CARD UPLOAD ========== -->
 <div class="card">
   <div class="icon">📤</div>
   <h2>Upload File</h2>
@@ -151,21 +214,40 @@ textarea{
   <div id="fileList"></div>
 </div>
 
+<!-- ========== CARD BUILD ========== -->
 <div class="card">
   <div class="icon">🏗️</div>
   <h2>Build Firmware</h2>
+  
   <select id="buildTarget">
     <option value="esp32">esp32</option>
     <option value="esp32s2">esp32s2</option>
     <option value="esp32s3">esp32s3</option>
     <option value="esp32c3">esp32c3</option>
   </select>
+  
   <div style="margin-top:15px;display:flex;flex-wrap:wrap;gap:10px">
     <button class="btn btn-primary" id="buildBtn" onclick="buildFirmware()">🔨 Build</button>
     <button class="btn btn-danger" onclick="cleanBuild()">🧹 Clean</button>
   </div>
+  
+  <!-- Progress Bar -->
+  <div class="progress-container" id="progressContainer">
+    <div class="progress-bar" id="progressBar"></div>
+    <div class="progress-text" id="progressText">0%</div>
+  </div>
+  
+  <!-- Build Status -->
+  <div id="buildStatus" style="margin-top:10px;padding:10px;border-radius:8px;display:none;font-size:0.9em"></div>
+  
+  <!-- Build Files -->
+  <div id="buildFilesSection" style="margin-top:15px;display:none">
+    <h3 style="color:#64ffda;font-size:1em;margin-bottom:10px">📦 File đã build:</h3>
+    <div id="buildFilesList"></div>
+  </div>
 </div>
 
+<!-- ========== CARD EDITOR ========== -->
 <div class="card" style="grid-column:span 2">
   <div class="icon">📝</div>
   <h2>Code Editor</h2>
@@ -177,6 +259,7 @@ textarea{
   <textarea id="codeEditor" placeholder="// Viết code ESP32 ở đây..."></textarea>
 </div>
 
+<!-- ========== CARD BUILD OUTPUT ========== -->
 <div class="card" style="grid-column:span 2">
   <div class="icon">💻</div>
   <h2>Build Output</h2>
@@ -186,7 +269,7 @@ textarea{
   </div>
 </div>
 
-<!-- ====== THÊM CARD TERMINAL MỚI ====== -->
+<!-- ========== CARD TERMINAL ========== -->
 <div class="card" style="grid-column:span 2">
   <div class="icon">🖥️</div>
   <h2>Terminal Server</h2>
@@ -200,19 +283,19 @@ textarea{
     <span class="output">Gõ lệnh và nhấn Enter hoặc click "Chạy"</span>
   </div>
 </div>
-<!-- ====== KẾT THÚC CARD TERMINAL ====== -->
 
 </div>
 </div>
 
 <div class="status-bar">
-  <span><span class="status-dot online"></span> ESP32 Web IDE</span>
+  <span><span class="status-dot online" id="statusDot"></span> ESP32 Web IDE</span>
   <span id="clock"></span>
 </div>
 
 <div id="toastContainer"></div>
 
 <script>
+// ============ AUTH ============
 const token = sessionStorage.getItem('esp32_ide_token');
 if (!token) {
   window.location.href = '/login.html';
@@ -240,6 +323,16 @@ function logout() {
   });
 }
 
+// ============ TOAST ============
+function showToast(msg, type = 'info') {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = msg;
+  document.getElementById('toastContainer').appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+// ============ UPLOAD ============
 const uploadZone = document.getElementById('uploadZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
@@ -271,18 +364,22 @@ function handleFiles(files) {
 }
 
 async function refreshFileList() {
-  const res = await apiFetch('/files');
-  const files = await res.json();
-  fileList.innerHTML = files.map(f => `
-    <div class="file-item">
-      <span class="name">📄 ${f.name}</span>
-      <span class="size">${formatSize(f.size)}</span>
-      <div class="actions">
-        <button class="btn btn-primary" style="padding:5px 10px;font-size:0.8em" onclick="editFile('${f.name}')">✏️</button>
-        <button class="btn btn-danger" style="padding:5px 10px;font-size:0.8em" onclick="deleteFile('${f.name}')">🗑️</button>
+  try {
+    const res = await apiFetch('/files');
+    const files = await res.json();
+    fileList.innerHTML = files.map(f => `
+      <div class="file-item">
+        <span class="name">📄 ${f.name}</span>
+        <span class="size">${formatSize(f.size)}</span>
+        <div class="actions">
+          <button class="btn btn-primary" style="padding:5px 10px;font-size:0.8em" onclick="editFile('${f.name}')">✏️</button>
+          <button class="btn btn-danger" style="padding:5px 10px;font-size:0.8em" onclick="deleteFile('${f.name}')">🗑️</button>
+        </div>
       </div>
-    </div>
-  `).join('');
+    `).join('');
+  } catch(e) {
+    console.error('Lỗi refresh file list:', e);
+  }
 }
 
 function formatSize(bytes) {
@@ -291,40 +388,7 @@ function formatSize(bytes) {
   return (bytes/(1024*1024)).toFixed(1) + ' MB';
 }
 
-async function buildFirmware() {
-  const target = document.getElementById('buildTarget').value;
-  const btn = document.getElementById('buildBtn');
-  btn.disabled = true;
-  appendTerminal(`🔨 Bắt đầu build cho ${target}...`, 'cmd');
-  try {
-    const res = await apiFetch('/build', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({target})
-    });
-    const data = await res.json();
-    if (data.success) {
-      appendTerminal(data.output, 'output');
-      appendTerminal('✅ Build thành công! Firmware: ' + data.bin, 'success');
-      showToast('Build thành công!', 'success');
-    } else {
-      appendTerminal(data.error || data.output || 'Lỗi không xác định', 'error');
-      showToast('Build thất bại!', 'error');
-    }
-  } catch (e) {
-    appendTerminal('❌ Lỗi: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function cleanBuild() {
-  appendTerminal('🧹 Đang clean build...', 'cmd');
-  const res = await apiFetch('/clean', {method: 'POST'});
-  const data = await res.json();
-  appendTerminal(data.output || 'Đã clean', data.success ? 'success' : 'error');
-}
-
+// ============ EDITOR ============
 async function loadFile() {
   const fileName = document.getElementById('fileName').value;
   const res = await apiFetch(`/file?name=${encodeURIComponent(fileName)}`);
@@ -359,6 +423,7 @@ async function deleteFile(name) {
   refreshFileList();
 }
 
+// ============ TERMINAL ============
 function appendTerminal(text, type) {
   const terminal = document.getElementById('terminal');
   const span = document.createElement('span');
@@ -368,15 +433,15 @@ function appendTerminal(text, type) {
   terminal.scrollTop = terminal.scrollHeight;
 }
 
-function showToast(msg, type) {
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.textContent = msg;
-  document.getElementById('toastContainer').appendChild(toast);
-  setTimeout(() => toast.remove(), 3000);
+function appendWebTerminal(text, type) {
+  const terminal = document.getElementById('webTerminal');
+  const span = document.createElement('span');
+  span.className = type || 'output';
+  span.textContent = text + '\n';
+  terminal.appendChild(span);
+  terminal.scrollTop = terminal.scrollHeight;
 }
 
-// ====== TERMINAL SERVER ======
 async function runCommand() {
   const input = document.getElementById('cmdInput');
   const cmd = input.value.trim();
@@ -416,31 +481,128 @@ function clearTerminal() {
   `;
 }
 
-function appendWebTerminal(text, type) {
-  const terminal = document.getElementById('webTerminal');
-  const span = document.createElement('span');
-  span.className = type || 'output';
-  span.textContent = text + '\n';
-  terminal.appendChild(span);
-  terminal.scrollTop = terminal.scrollHeight;
+// ============ BUILD ============
+let isBuilding = false;
+
+async function buildFirmware() {
+  if (isBuilding) return;
+  
+  const target = document.getElementById('buildTarget').value;
+  const btn = document.getElementById('buildBtn');
+  const statusDiv = document.getElementById('buildStatus');
+  const progressContainer = document.getElementById('progressContainer');
+  const progressBar = document.getElementById('progressBar');
+  const progressText = document.getElementById('progressText');
+  const statusDot = document.getElementById('statusDot');
+  const buildFilesSection = document.getElementById('buildFilesSection');
+  
+  isBuilding = true;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang build...';
+  statusDiv.style.display = 'block';
+  statusDot.className = 'status-dot building';
+  
+  // Reset progress
+  progressContainer.style.display = 'block';
+  progressBar.style.width = '0%';
+  progressText.textContent = '0%';
+  buildFilesSection.style.display = 'none';
+  
+  statusDiv.innerHTML = '⏳ Đang build... (có thể mất vài phút)';
+  statusDiv.style.background = 'rgba(255,215,0,0.2)';
+  statusDiv.style.color = '#ffd740';
+  
+  appendTerminal(`🔨 Bắt đầu build cho ${target}...`, 'cmd');
+  
+  // Simulate progress (frontend animation)
+  let progress = 0;
+  const progressInterval = setInterval(() => {
+    if (progress < 90) {
+      progress += Math.random() * 5 + 1;
+      if (progress > 90) progress = 90;
+      progressBar.style.width = progress + '%';
+      progressText.textContent = Math.round(progress) + '%';
+    }
+  }, 500);
+  
+  try {
+    const res = await apiFetch('/build', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target})
+    });
+    const data = await res.json();
+    
+    clearInterval(progressInterval);
+    
+    if (data.success) {
+      // Hoàn thành progress
+      progressBar.style.width = '100%';
+      progressText.textContent = '100%';
+      
+      appendTerminal(data.output, 'output');
+      appendTerminal('✅ Build thành công!', 'success');
+      
+      statusDiv.innerHTML = '✅ Build thành công!';
+      statusDiv.style.background = 'rgba(105,240,174,0.2)';
+      statusDiv.style.color = '#69f0ae';
+      
+      showToast('Build thành công!', 'success');
+      
+      // Kiểm tra và hiển thị file build
+      await checkBuildFiles();
+      
+    } else {
+      progressBar.style.background = '#ff5252';
+      progressText.textContent = '❌ Thất bại';
+      
+      appendTerminal(data.error || data.output || 'Lỗi không xác định', 'error');
+      statusDiv.innerHTML = '❌ Build thất bại. Xem log bên dưới.';
+      statusDiv.style.background = 'rgba(255,82,82,0.2)';
+      statusDiv.style.color = '#ff5252';
+      showToast('Build thất bại!', 'error');
+    }
+  } catch (e) {
+    clearInterval(progressInterval);
+    appendTerminal('❌ Lỗi: ' + e.message, 'error');
+    statusDiv.innerHTML = '❌ Lỗi kết nối: ' + e.message;
+    statusDiv.style.background = 'rgba(255,82,82,0.2)';
+    statusDiv.style.color = '#ff5252';
+    showToast('Lỗi kết nối!', 'error');
+  } finally {
+    isBuilding = false;
+    btn.disabled = false;
+    btn.textContent = '🔨 Build';
+    statusDot.className = 'status-dot online';
+    
+    // Ẩn progress sau 3 giây
+    setTimeout(() => {
+      progressContainer.style.display = 'none';
+    }, 3000);
+  }
 }
 
-// ====== SỰ KIỆN ======
-document.addEventListener('DOMContentLoaded', function() {
-  const cmdInput = document.getElementById('cmdInput');
-  if (cmdInput) {
-    cmdInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') runCommand();
-    });
-  }
-});
-
-setInterval(() => {
-  document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
-}, 1000);
-
-refreshFileList();
-document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
-</script>
-</body>
-</html>
+async function checkBuildFiles() {
+  try {
+    const res = await apiFetch('/check_build_files');
+    const data = await res.json();
+    const section = document.getElementById('buildFilesSection');
+    const list = document.getElementById('buildFilesList');
+    
+    if (data.files && data.files.some(f => f.exists)) {
+      section.style.display = 'block';
+      list.innerHTML = data.files
+        .filter(f => f.exists)
+        .map(f => `
+          <div class="build-file-item">
+            <div class="info">
+              <span class="name">📄 ${f.display_name}</span>
+              <span class="size">${formatSize(f.size)}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="status-badge">✅ Đã build</span>
+              <button class="btn btn-download" style="padding:5px 16px;font-size:0.8em" onclick="downloadFile('${f.name}')">⬇️ Tải</button>
+            </div>
+          </div>
+        `).join('');
+      showToast(`✅ Đã tìm thấy ${data.files.filte
