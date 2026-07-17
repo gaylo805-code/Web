@@ -186,6 +186,22 @@ textarea{
   </div>
 </div>
 
+<!-- ====== THÊM CARD TERMINAL MỚI ====== -->
+<div class="card" style="grid-column:span 2">
+  <div class="icon">🖥️</div>
+  <h2>Terminal Server</h2>
+  <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <input type="text" id="cmdInput" placeholder="Nhập lệnh (ví dụ: ls, cat file, idf.py build...)" style="flex:1;min-width:200px">
+    <button class="btn btn-primary" onclick="runCommand()">▶️ Chạy</button>
+    <button class="btn btn-danger" onclick="clearTerminal()">🧹 Xóa</button>
+  </div>
+  <div class="terminal" id="webTerminal" style="max-height:400px;overflow-y:auto;font-size:0.9em">
+    <span class="success">✅ Terminal sẵn sàng</span>
+    <span class="output">Gõ lệnh và nhấn Enter hoặc click "Chạy"</span>
+  </div>
+</div>
+<!-- ====== KẾT THÚC CARD TERMINAL ====== -->
+
 </div>
 </div>
 
@@ -346,7 +362,7 @@ async function deleteFile(name) {
 function appendTerminal(text, type) {
   const terminal = document.getElementById('terminal');
   const span = document.createElement('span');
-  span.className = type;
+  span.className = type || 'output';
   span.textContent = text + '\n';
   terminal.appendChild(span);
   terminal.scrollTop = terminal.scrollHeight;
@@ -359,6 +375,65 @@ function showToast(msg, type) {
   document.getElementById('toastContainer').appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
 }
+
+// ====== TERMINAL SERVER ======
+async function runCommand() {
+  const input = document.getElementById('cmdInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  
+  appendWebTerminal(`$ ${cmd}`, 'cmd');
+  input.value = '';
+  input.disabled = true;
+  
+  try {
+    const res = await apiFetch('/exec', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({command: cmd})
+    });
+    const data = await res.json();
+    
+    if (data.success) {
+      if (data.output) appendWebTerminal(data.output, 'output');
+      if (data.error) appendWebTerminal(data.error, 'error');
+    } else {
+      appendWebTerminal(`❌ Lỗi: ${data.error || 'Không xác định'}`, 'error');
+    }
+  } catch (e) {
+    appendWebTerminal(`❌ Lỗi kết nối: ${e.message}`, 'error');
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+function clearTerminal() {
+  const terminal = document.getElementById('webTerminal');
+  terminal.innerHTML = `
+    <span class="success">✅ Terminal đã được xóa</span>
+    <span class="output">Gõ lệnh và nhấn Enter hoặc click "Chạy"</span>
+  `;
+}
+
+function appendWebTerminal(text, type) {
+  const terminal = document.getElementById('webTerminal');
+  const span = document.createElement('span');
+  span.className = type || 'output';
+  span.textContent = text + '\n';
+  terminal.appendChild(span);
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+// ====== SỰ KIỆN ======
+document.addEventListener('DOMContentLoaded', function() {
+  const cmdInput = document.getElementById('cmdInput');
+  if (cmdInput) {
+    cmdInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') runCommand();
+    });
+  }
+});
 
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
