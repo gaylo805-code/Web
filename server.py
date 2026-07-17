@@ -15,12 +15,15 @@ import time
 import urllib.parse
 from pathlib import Path
 
-WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())  # Sửa: dùng getcwd() thay vì hardcode
+WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
 # Danh sách target hợp lệ cho build (tránh nhận chuỗi tùy ý)
 ALLOWED_TARGETS = {"esp32", "esp32s2", "esp32s3", "esp32c3"}
+
+# Danh sách lệnh nguy hiểm bị cấm (chống hack)
+DANGEROUS_COMMANDS = ["rm -rf", "sudo", "chmod", "chown", "mkfs", "dd if", ":(){", "> /dev/sda"]
 
 # token -> hết hạn (epoch)
 _sessions = {}
@@ -59,7 +62,7 @@ def ensure_esp_project():
     # Tạo CMakeLists.txt gốc
     cmake_file = base / "CMakeLists.txt"
     if not cmake_file.exists():
-        cmake_file.write_text("""cmake_minimum_required(VERSION 3.5)
+        cmake_file.write_text("""cmake_minimum_required(VERSION 3.10)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(dns_sniffer)
 """)
@@ -93,6 +96,20 @@ void app_main(void) {
 """)
         print("✅ Đã tạo main/main.c")
 
+    # Tạo sdkconfig mặc định
+    sdkconfig = base / "sdkconfig"
+    if not sdkconfig.exists():
+        sdkconfig.write_text("""CONFIG_ESP32_REV_MIN=0
+CONFIG_ESP32_REV_MIN_3_0=y
+CONFIG_ESP32_XTAL_FREQ_40=y
+CONFIG_ESP32_PHY_MAX_WIFI_TX_POWER=20
+CONFIG_ESPTOOLPY_FLASHSIZE=4MB
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+CONFIG_ESPTOOLPY_BEFORE_RESET=no_reset
+CONFIG_ESPTOOLPY_AFTER_RESET=no_reset
+""")
+        print("✅ Đã tạo sdkconfig")
+
 
 class APIHandler(http.server.SimpleHTTPRequestHandler):
 
@@ -120,7 +137,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
-        # Chuyển hướng root đến login/dashboard (dựa trên token trong header)
+        # Chuyển hướng root đến login/dashboard
         if parsed.path == "/":
             self.path = "/login.html" if not self._authorized() else "/dashboard.html"
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
@@ -153,18 +170,15 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(404, {"error": "Không tìm thấy file"})
             return
 
-        # Phục vụ các file tĩnh (html, css, js) từ thư mục hiện tại
+        # Phục vụ các file tĩnh (html, css, js)
         try:
-            # Chặn truy cập vào các file nhạy cảm
             if parsed.path.startswith("/.") or "/." in parsed.path:
                 self.send_response(403)
                 self.end_headers()
                 return
-            # Mở file
             with open(parsed.path[1:], "rb") as f:
                 content = f.read()
                 self.send_response(200)
-                # Xác định content-type
                 if parsed.path.endswith(".html"):
                     self.send_header("Content-Type", "text/html")
                 elif parsed.path.endswith(".css"):
@@ -196,6 +210,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
         except json.JSONDecodeError:
             data = {}
 
+        # ============ LOGIN (không cần auth) ============
         if parsed.path == "/login":
             password = data.get("password", "")
             if not WEB_PASSWORD:
@@ -208,6 +223,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(401, {"error": "Sai mật khẩu"})
             return
 
+        # ============ LOGOUT (không cần auth) ============
         if parsed.path == "/logout":
             auth = self.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
@@ -215,19 +231,61 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, {"message": "Đã đăng xuất"})
             return
 
+        # ============ TẤT CẢ CÁC ENDPOINT CÒN LẠI CẦN AUTH ============
         if not self._require_auth():
             return
 
+        # ============ /exec - TERMINAL (THÊM MỚI) ============
+        if parsed.path == "/exec":
+            command = data.get("command", "").strip()
+            if not command:
+                self._send_json(400, {"success": False, "error": "Không có lệnh"})
+                return
+            
+            # 🔒 Chặn lệnh nguy hiểm
+            if any(cmd in command for cmd in DANGEROUS_COMMANDS):
+                self._send_json(403, {"success": False, "error": "Lệnh không được phép (bị chặn vì lý do bảo mật)"})
+                return
+            
+            # Chỉ cho chạy tối đa 30 giây
+            try:
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    cwd=WORK_DIR,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                self._send_json(200, {
+                    "success": True,
+                    "output": result.stdout[-5000:] if result.stdout else "",
+                    "error": result.stderr[-2000:] if result.stderr else "",
+                    "returncode": result.returncode
+                })
+            except subprocess.TimeoutExpired:
+                self._send_json(408, {"success": False, "error": "Lệnh chạy quá 30 giây, bị dừng"})
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
+        # ============ /build ============
         if parsed.path == "/build":
             target = data.get("target", "esp32")
             if target not in ALLOWED_TARGETS:
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
-                # Đảm bảo project ESP-IDF đã có trước khi build
                 ensure_esp_project()
+                subprocess.run(
+                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py fullclean"],
+                    cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
+                )
+                subprocess.run(
+                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target}"],
+                    cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
+                )
                 result = subprocess.run(
-                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target} && idf.py build"],
+                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py build"],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
                 )
                 success = result.returncode == 0
@@ -241,6 +299,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(500, {"success": False, "error": str(e)})
             return
 
+        # ============ /clean ============
         if parsed.path == "/clean":
             try:
                 result = subprocess.run(
@@ -252,6 +311,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(500, {"success": False, "error": str(e)})
             return
 
+        # ============ /save ============
         if parsed.path == "/save":
             name = data.get("name", "")
             content = data.get("content", "")
@@ -266,6 +326,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, {"message": f"Đã lưu {name}"})
             return
 
+        # ============ /upload ============
         if parsed.path == "/upload":
             name = data.get("name", "")
             content = data.get("content", "")
@@ -304,15 +365,10 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # Tạo project ESP-IDF ngay khi khởi động (fix lỗi CMakeLists.txt)
     ensure_esp_project()
-
     if not WEB_PASSWORD:
         print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt — server sẽ từ chối mọi đăng nhập.")
-
-    # Chuyển đến thư mục chứa file server.py để phục vụ file tĩnh
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
     server = http.server.HTTPServer(("0.0.0.0", 3000), APIHandler)
-    print("✅ Web IDE server (có xác thực) đang chạy tại port 3000")
+    print("✅ Web IDE server (có xác thực + terminal) đang chạy tại port 3000")
     server.serve_forever()
