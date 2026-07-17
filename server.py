@@ -19,6 +19,7 @@ from pathlib import Path
 
 WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
+PORT = int(os.environ.get("PORT", 3030))  # 👈 PORT AN TOÀN: 3030
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
 # Danh sách target hợp lệ cho build (tránh nhận chuỗi tùy ý)
@@ -551,7 +552,4 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as f:
                 f.write(content)
-            self._send_json(200, {"message": f"Đã lưu {name}"})
-            return
-
-        #
+            self._send_json
