@@ -15,7 +15,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-WORK_DIR = os.environ.get("WORK_DIR", "/home/runner/work/Buld-code-esp-32/Buld-code-esp-32")
+WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())  # Sửa: dùng getcwd() thay vì hardcode
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
@@ -51,6 +51,49 @@ def safe_path(name: str) -> str:
     return str(candidate)
 
 
+def ensure_esp_project():
+    """Tạo cấu trúc project ESP-IDF nếu chưa có (fix lỗi CMakeLists.txt)"""
+    base = Path(WORK_DIR).resolve()
+    print(f"📁 Đảm bảo project ESP-IDF trong: {base}")
+
+    # Tạo CMakeLists.txt gốc
+    cmake_file = base / "CMakeLists.txt"
+    if not cmake_file.exists():
+        cmake_file.write_text("""cmake_minimum_required(VERSION 3.5)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(dns_sniffer)
+""")
+        print("✅ Đã tạo CMakeLists.txt")
+
+    # Tạo thư mục main
+    main_dir = base / "main"
+    main_dir.mkdir(exist_ok=True)
+
+    # Tạo main/CMakeLists.txt
+    main_cmake = main_dir / "CMakeLists.txt"
+    if not main_cmake.exists():
+        main_cmake.write_text("""idf_component_register(SRCS "main.c")
+""")
+        print("✅ Đã tạo main/CMakeLists.txt")
+
+    # Tạo main/main.c (mẫu)
+    main_c = main_dir / "main.c"
+    if not main_c.exists():
+        main_c.write_text("""#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+void app_main(void) {
+    printf("ESP32 DNS Sniffer Started!\\n");
+    while (1) {
+        printf("Running...\\n");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+""")
+        print("✅ Đã tạo main/main.c")
+
+
 class APIHandler(http.server.SimpleHTTPRequestHandler):
 
     def _send_json(self, status, obj):
@@ -77,8 +120,9 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        # Chuyển hướng root đến login/dashboard (dựa trên token trong header)
         if parsed.path == "/":
-            self.path = "/login.html" if not self._authorized_via_cookie() else "/dashboard.html"
+            self.path = "/login.html" if not self._authorized() else "/dashboard.html"
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
 
         if parsed.path == "/files":
@@ -109,12 +153,39 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(404, {"error": "Không tìm thấy file"})
             return
 
-        # Static assets (css/js nếu có), chặn truy cập file hệ thống ngoài thư mục web
-        return http.server.SimpleHTTPRequestHandler.do_GET(self)
-
-    def _authorized_via_cookie(self):
-        # Cho phép mở dashboard.html nếu trình duyệt có cookie hợp lệ; JS sẽ tự kiểm tra lại qua API
-        return False
+        # Phục vụ các file tĩnh (html, css, js) từ thư mục hiện tại
+        try:
+            # Chặn truy cập vào các file nhạy cảm
+            if parsed.path.startswith("/.") or "/." in parsed.path:
+                self.send_response(403)
+                self.end_headers()
+                return
+            # Mở file
+            with open(parsed.path[1:], "rb") as f:
+                content = f.read()
+                self.send_response(200)
+                # Xác định content-type
+                if parsed.path.endswith(".html"):
+                    self.send_header("Content-Type", "text/html")
+                elif parsed.path.endswith(".css"):
+                    self.send_header("Content-Type", "text/css")
+                elif parsed.path.endswith(".js"):
+                    self.send_header("Content-Type", "application/javascript")
+                elif parsed.path.endswith(".png"):
+                    self.send_header("Content-Type", "image/png")
+                elif parsed.path.endswith(".ico"):
+                    self.send_header("Content-Type", "image/x-icon")
+                else:
+                    self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+        except Exception:
+            self.send_response(500)
+            self.end_headers()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -153,6 +224,8 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
+                # Đảm bảo project ESP-IDF đã có trước khi build
+                ensure_esp_project()
                 result = subprocess.run(
                     ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target} && idf.py build"],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
@@ -231,9 +304,15 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Tạo project ESP-IDF ngay khi khởi động (fix lỗi CMakeLists.txt)
+    ensure_esp_project()
+
     if not WEB_PASSWORD:
         print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt — server sẽ từ chối mọi đăng nhập.")
+
+    # Chuyển đến thư mục chứa file server.py để phục vụ file tĩnh
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
     server = http.server.HTTPServer(("0.0.0.0", 3000), APIHandler)
-    print("Web IDE server (có xác thực) đang chạy tại port 3000")
+    print("✅ Web IDE server (có xác thực) đang chạy tại port 3000")
     server.serve_forever()
