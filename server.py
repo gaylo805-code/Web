@@ -19,8 +19,13 @@ WORK_DIR = os.environ.get("WORK_DIR", "/home/runner/work/Buld-code-esp-32/Buld-c
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
-# Danh sách target hợp lệ cho build (tránh nhận chuỗi tùy ý)
-ALLOWED_TARGETS = {"esp32", "esp32s2", "esp32s3", "esp32c3"}
+# Danh sách board hợp lệ cho build (tránh nhận chuỗi tùy ý) — FQBN của arduino-cli
+ALLOWED_TARGETS = {
+    "esp32": "esp32:esp32:esp32",
+    "esp32s2": "esp32:esp32:esp32s2",
+    "esp32s3": "esp32:esp32:esp32s3",
+    "esp32c3": "esp32:esp32:esp32c3",
+}
 
 # token -> hết hạn (epoch)
 _sessions = {}
@@ -149,12 +154,13 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/build":
             target = data.get("target", "esp32")
-            if target not in ALLOWED_TARGETS:
+            fqbn = ALLOWED_TARGETS.get(target)
+            if fqbn is None:
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
                 result = subprocess.run(
-                    ["bash", "-lc", f"source ~/esp-idf/export.sh && idf.py set-target {target} && idf.py build"],
+                    ["arduino-cli", "compile", "--fqbn", fqbn, "--output-dir", "build", "."],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
                 )
                 success = result.returncode == 0
@@ -162,7 +168,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                     "success": success,
                     "output": result.stdout[-4000:],
                     "error": result.stderr[-2000:] if not success else "",
-                    "bin": "build/dns_sniffer.bin" if success else "",
+                    "bin": "build/*.bin" if success else "",
                 })
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
@@ -170,11 +176,11 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/clean":
             try:
-                result = subprocess.run(
-                    ["bash", "-lc", "source ~/esp-idf/export.sh && idf.py fullclean"],
-                    cwd=WORK_DIR, capture_output=True, text=True, timeout=120,
-                )
-                self._send_json(200, {"success": result.returncode == 0, "output": result.stdout[-2000:]})
+                build_dir = os.path.join(WORK_DIR, "build")
+                if os.path.isdir(build_dir):
+                    import shutil
+                    shutil.rmtree(build_dir)
+                self._send_json(200, {"success": True, "output": "Đã xóa thư mục build"})
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
             return
