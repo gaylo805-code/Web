@@ -27,6 +27,19 @@ ALLOWED_TARGETS = {
     "esp32c3": "esp32:esp32:esp32c3",
 }
 
+# Lệnh chẩn đoán cố định — KHÔNG nhận chuỗi lệnh tùy ý từ người dùng.
+# Đây là biện pháp an toàn: server chạy công khai, không cho phép RCE tự do
+# dù đã có mật khẩu, để tránh máy bị lợi dụng nếu mật khẩu rò rỉ.
+DIAG_COMMANDS = {
+    "arduino_version": ["arduino-cli", "version"],
+    "list_boards": ["arduino-cli", "board", "listall"],
+    "list_cores": ["arduino-cli", "core", "list"],
+    "list_files": ["find", ".", "-maxdepth", "3", "-type", "f"],
+    "disk_space": ["df", "-h", "."],
+    "build_dir": ["ls", "-la", "build"],
+    "sketch_check": ["arduino-cli", "compile", "--dry-run", "--fqbn", "esp32:esp32:esp32", "."],
+}
+
 # token -> hết hạn (epoch)
 _sessions = {}
 
@@ -192,9 +205,10 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             if not self._require_auth():
                 return
             params = urllib.parse.parse_qs(parsed.query)
-            filename = params.get("file", ["dns_sniffer.bin"])[0]
-            if not filename.endswith(".bin"):
-                self._send_json(400, {"error": "Chỉ cho phép tải file .bin"})
+            filename = params.get("file", [""])[0]
+            allowed_ext = (".bin", ".elf", ".map")
+            if not filename.endswith(allowed_ext):
+                self._send_json(400, {"error": f"Chỉ cho phép tải file {allowed_ext}"})
                 return
             try:
                 filepath = safe_path("build/" + filename)
@@ -215,6 +229,18 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(content)
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
+            return
+
+        if parsed.path == "/build_files":
+            if not self._require_auth():
+                return
+            build_dir = Path(WORK_DIR) / "build"
+            files = []
+            if build_dir.is_dir():
+                for f in build_dir.rglob("*"):
+                    if f.is_file() and f.suffix in (".bin", ".elf", ".map"):
+                        files.append({"name": str(f.relative_to(build_dir)), "size": f.stat().st_size})
+            self._send_json(200, files)
             return
 
         if parsed.path == "/check_build_files":
@@ -334,6 +360,22 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                     import shutil
                     shutil.rmtree(build_dir)
                 self._send_json(200, {"success": True, "output": "Đã xóa thư mục build"})
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
+        if parsed.path == "/diag":
+            key = data.get("command", "")
+            cmd = DIAG_COMMANDS.get(key)
+            if cmd is None:
+                self._send_json(400, {"error": f"Lệnh không hợp lệ. Cho phép: {sorted(DIAG_COMMANDS)}"})
+                return
+            try:
+                result = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True, text=True, timeout=60)
+                self._send_json(200, {
+                    "success": result.returncode == 0,
+                    "output": (result.stdout + result.stderr)[-4000:],
+                })
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
             return

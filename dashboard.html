@@ -210,6 +210,38 @@ textarea{
   </div>
 </div>
 
+<div class="card" style="grid-column:span 2">
+  <div class="icon">🛠️</div>
+  <h2>Bảng lệnh chẩn đoán</h2>
+  <p style="color:#8892b0;font-size:0.85em;margin-bottom:15px">
+    Các lệnh cố định để debug nhanh khi build lỗi — không nhận lệnh tự do vì lý do an toàn.
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:8px">
+    <button class="btn btn-warning" onclick="runDiag('arduino_version')">📦 Phiên bản arduino-cli</button>
+    <button class="btn btn-warning" onclick="runDiag('list_boards')">🔌 Danh sách board</button>
+    <button class="btn btn-warning" onclick="runDiag('list_cores')">⚙️ Core đã cài</button>
+    <button class="btn btn-warning" onclick="runDiag('list_files')">📁 Cây thư mục</button>
+    <button class="btn btn-warning" onclick="runDiag('build_dir')">🗂️ Nội dung build/</button>
+    <button class="btn btn-warning" onclick="runDiag('disk_space')">💽 Dung lượng đĩa</button>
+    <button class="btn btn-warning" onclick="runDiag('sketch_check')">🔍 Kiểm tra sketch (dry-run)</button>
+  </div>
+</div>
+
+<div class="card" style="grid-column:span 2">
+  <div class="icon">📦</div>
+  <h2>Tải Firmware</h2>
+  <p style="color:#8892b0;font-size:0.85em;margin-bottom:15px">
+    Sau khi build thành công, tải về 3 file cần thiết để flash / debug.
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:15px" id="downloadButtons">
+    <button class="btn btn-success" onclick="downloadBuildFile('bin')">⬇️ Tải .bin (Firmware)</button>
+    <button class="btn btn-primary" onclick="downloadBuildFile('elf')">⬇️ Tải .elf (Debug symbols)</button>
+    <button class="btn btn-primary" onclick="downloadBuildFile('map')">⬇️ Tải .map (Memory map)</button>
+  </div>
+  <button class="btn btn-warning" style="padding:8px 16px;font-size:0.85em" onclick="refreshBuildFiles()">🔄 Làm mới danh sách file build</button>
+  <div id="buildFilesList" style="margin-top:12px"></div>
+</div>
+
 </div>
 </div>
 
@@ -458,11 +490,79 @@ function showToast(msg, type) {
   setTimeout(() => toast.remove(), 3000);
 }
 
+async function runDiag(command) {
+  appendTerminal(`🛠️ Chạy chẩn đoán: ${command}...`, 'cmd');
+  try {
+    const res = await apiFetch('/diag', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({command})
+    });
+    const data = await res.json();
+    if (res.ok) {
+      appendTerminal(data.output || '(không có output)', data.success ? 'output' : 'error');
+    } else {
+      appendTerminal(data.error, 'error');
+    }
+  } catch (e) {
+    appendTerminal('❌ Lỗi: ' + e.message, 'error');
+  }
+}
+
+async function refreshBuildFiles() {
+  try {
+    const res = await apiFetch('/build_files');
+    const files = await res.json();
+    const list = document.getElementById('buildFilesList');
+    if (!files.length) {
+      list.innerHTML = '<p style="color:#8892b0;font-size:0.85em">Chưa có file build. Hãy build trước.</p>';
+      return;
+    }
+    list.innerHTML = files.map(f => `
+      <div class="file-item">
+        <span class="name">📄 ${f.name}</span>
+        <span class="size">${formatSize(f.size)}</span>
+      </div>
+    `).join('');
+  } catch (e) {
+    showToast('Không thể tải danh sách file build', 'error');
+  }
+}
+
+function downloadBuildFile(ext) {
+  apiFetch(`/build_files`).then(res => res.json()).then(files => {
+    const match = files.find(f => f.name.endsWith('.' + ext));
+    if (!match) {
+      showToast(`Không tìm thấy file .${ext} — hãy build trước`, 'error');
+      return;
+    }
+    // Tải file kèm token qua fetch (vì thẻ <a> thường không gửi header Authorization)
+    apiFetch(`/download?file=${encodeURIComponent(match.name)}`).then(async r => {
+      if (!r.ok) {
+        const err = await r.json();
+        showToast(err.error || 'Tải file thất bại', 'error');
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = match.name.split('/').pop();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast(`Đã tải ${match.name}`, 'success');
+    });
+  });
+}
+
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
 }, 1000);
 
 refreshFileList();
+refreshBuildFiles();
 document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
 </script>
 </body>
