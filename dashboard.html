@@ -58,6 +58,7 @@ body{
 .btn-success{background:#69f0ae;color:#0a0e27}
 .btn-danger{background:#ff5252;color:white}
 .btn-warning{background:#ffd740;color:#0a0e27}
+.btn-download{background:#00bcd4;color:white}
 
 .upload-zone{
   border:3px dashed #2a2f4a;border-radius:15px;
@@ -123,6 +124,24 @@ textarea{
 .toast.error{background:#ff5252;color:white}
 
 @keyframes slideIn{from{transform:translateX(400px)}to{transform:translateX(0)}}
+
+.build-file-item {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:10px 14px;
+  background:rgba(0,0,0,0.3);
+  border-radius:10px;
+  margin:8px 0;
+  border-left:4px solid #69f0ae;
+}
+.build-file-item .info{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.build-file-item .name{color:#64ffda;font-weight:500}
+.build-file-item .size{color:#8892b0;font-size:0.8em}
 </style>
 </head>
 <body>
@@ -163,6 +182,11 @@ textarea{
   <div style="margin-top:15px;display:flex;flex-wrap:wrap;gap:10px">
     <button class="btn btn-primary" id="buildBtn" onclick="buildFirmware()">🔨 Build</button>
     <button class="btn btn-danger" onclick="cleanBuild()">🧹 Clean</button>
+  </div>
+  <div id="buildStatus" style="margin-top:10px;padding:10px;border-radius:8px;display:none"></div>
+  <div id="buildFilesSection" style="margin-top:15px;display:none">
+    <h3 style="color:#64ffda;font-size:1em;margin-bottom:10px">📦 File đã build:</h3>
+    <div id="buildFilesList"></div>
   </div>
 </div>
 
@@ -278,8 +302,18 @@ function formatSize(bytes) {
 async function buildFirmware() {
   const target = document.getElementById('buildTarget').value;
   const btn = document.getElementById('buildBtn');
+  const statusDiv = document.getElementById('buildStatus');
+  const filesSection = document.getElementById('buildFilesSection');
+  
   btn.disabled = true;
+  statusDiv.style.display = 'block';
+  statusDiv.innerHTML = '⏳ Đang build... (có thể mất vài phút)';
+  statusDiv.style.background = 'rgba(255,215,0,0.2)';
+  statusDiv.style.color = '#ffd740';
+  filesSection.style.display = 'none';
+  
   appendTerminal(`🔨 Bắt đầu build cho ${target}...`, 'cmd');
+  
   try {
     const res = await apiFetch('/build', {
       method: 'POST',
@@ -287,18 +321,79 @@ async function buildFirmware() {
       body: JSON.stringify({target})
     });
     const data = await res.json();
+    
     if (data.success) {
       appendTerminal(data.output, 'output');
-      appendTerminal('✅ Build thành công! Firmware: ' + data.bin, 'success');
+      appendTerminal('✅ Build thành công!', 'success');
+      statusDiv.innerHTML = '✅ Build thành công!';
+      statusDiv.style.background = 'rgba(105,240,174,0.2)';
+      statusDiv.style.color = '#69f0ae';
       showToast('Build thành công!', 'success');
+      await checkBuildFiles();
     } else {
       appendTerminal(data.error || data.output || 'Lỗi không xác định', 'error');
+      statusDiv.innerHTML = '❌ Build thất bại. Xem log bên dưới.';
+      statusDiv.style.background = 'rgba(255,82,82,0.2)';
+      statusDiv.style.color = '#ff5252';
       showToast('Build thất bại!', 'error');
     }
   } catch (e) {
     appendTerminal('❌ Lỗi: ' + e.message, 'error');
+    statusDiv.innerHTML = '❌ Lỗi kết nối: ' + e.message;
+    showToast('Lỗi kết nối!', 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function checkBuildFiles() {
+  try {
+    const res = await apiFetch('/check_build_files');
+    const data = await res.json();
+    const section = document.getElementById('buildFilesSection');
+    const list = document.getElementById('buildFilesList');
+    
+    if (data.files && data.files.some(f => f.exists)) {
+      section.style.display = 'block';
+      list.innerHTML = data.files
+        .filter(f => f.exists)
+        .map(f => `
+          <div class="build-file-item">
+            <div class="info">
+              <span class="name">📄 ${f.display_name}</span>
+              <span class="size">${formatSize(f.size)}</span>
+            </div>
+            <button class="btn btn-download" style="padding:5px 16px;font-size:0.8em" onclick="downloadFile('${f.name}')">⬇️ Tải</button>
+          </div>
+        `).join('');
+    }
+  } catch (e) {
+    console.error('Lỗi kiểm tra file build:', e);
+  }
+}
+
+async function downloadFile(filename) {
+  try {
+    const response = await fetch(`/download?file=${encodeURIComponent(filename)}`, {
+      headers: authHeaders()
+    });
+    if (!response.ok) {
+      const errorData = await response.json();
+      showToast('Lỗi tải file: ' + (errorData.error || 'Không xác định'), 'error');
+      return;
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename.split('/').pop();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    showToast(`✅ Đang tải ${filename.split('/').pop()}...`, 'success');
+  } catch (e) {
+    showToast('Lỗi tải file: ' + e.message, 'error');
   }
 }
 
@@ -307,6 +402,9 @@ async function cleanBuild() {
   const res = await apiFetch('/clean', {method: 'POST'});
   const data = await res.json();
   appendTerminal(data.output || 'Đã clean', data.success ? 'success' : 'error');
+  document.getElementById('buildFilesSection').style.display = 'none';
+  document.getElementById('buildStatus').style.display = 'none';
+  showToast('Đã clean build', 'info');
 }
 
 async function loadFile() {
@@ -346,7 +444,7 @@ async function deleteFile(name) {
 function appendTerminal(text, type) {
   const terminal = document.getElementById('terminal');
   const span = document.createElement('span');
-  span.className = type;
+  span.className = type || 'output';
   span.textContent = text + '\n';
   terminal.appendChild(span);
   terminal.scrollTop = terminal.scrollHeight;
@@ -368,4 +466,4 @@ refreshFileList();
 document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
 </script>
 </body>
-</html>
+  </html>

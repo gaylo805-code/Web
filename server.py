@@ -15,7 +15,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-WORK_DIR = os.environ.get("WORK_DIR", "/home/runner/work/Buld-code-esp-32/Buld-code-esp-32")
+WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
@@ -56,6 +56,80 @@ def safe_path(name: str) -> str:
     return str(candidate)
 
 
+def ensure_esp_project():
+    """Tạo cấu trúc project ESP-IDF nếu chưa có (fix lỗi CMakeLists.txt)"""
+    base = Path(WORK_DIR).resolve()
+    print(f"📁 Đảm bảo project ESP-IDF trong: {base}")
+
+    cmake_file = base / "CMakeLists.txt"
+    if not cmake_file.exists():
+        cmake_file.write_text("""cmake_minimum_required(VERSION 3.10)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(dns_sniffer)
+""")
+        print("✅ Đã tạo CMakeLists.txt")
+
+    main_dir = base / "main"
+    main_dir.mkdir(exist_ok=True)
+
+    main_cmake = main_dir / "CMakeLists.txt"
+    if not main_cmake.exists():
+        main_cmake.write_text("""idf_component_register(SRCS "main.c" "dns_sniffer.c")
+""")
+        print("✅ Đã tạo main/CMakeLists.txt")
+
+    main_c = main_dir / "main.c"
+    if not main_c.exists():
+        main_c.write_text("""#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "dns_sniffer.h"
+
+void app_main(void) {
+    printf("ESP32 DNS Sniffer Started!\\n");
+    init_dns_sniffer();
+    while (1) {
+        printf("Running...\\n");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+""")
+        print("✅ Đã tạo main/main.c")
+
+    main_h = main_dir / "dns_sniffer.h"
+    if not main_h.exists():
+        main_h.write_text("""#ifndef DNS_SNIFFER_H
+#define DNS_SNIFFER_H
+
+void init_dns_sniffer(void);
+
+#endif
+""")
+        print("✅ Đã tạo main/dns_sniffer.h")
+
+    main_c2 = main_dir / "dns_sniffer.c"
+    if not main_c2.exists():
+        main_c2.write_text("""#include <stdio.h>
+#include "dns_sniffer.h"
+
+void init_dns_sniffer(void) {
+    printf("DNS Sniffer initialized!\\n");
+}
+""")
+        print("✅ Đã tạo main/dns_sniffer.c")
+
+    sdkconfig = base / "sdkconfig"
+    if not sdkconfig.exists():
+        sdkconfig.write_text("""CONFIG_ESP32_REV_MIN=0
+CONFIG_ESP32_REV_MIN_3_0=y
+CONFIG_ESP32_XTAL_FREQ_40=y
+CONFIG_ESP32_PHY_MAX_WIFI_TX_POWER=20
+CONFIG_ESPTOOLPY_FLASHSIZE=4MB
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+""")
+        print("✅ Đã tạo sdkconfig")
+
+
 class APIHandler(http.server.SimpleHTTPRequestHandler):
 
     def _send_json(self, status, obj):
@@ -83,7 +157,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/":
-            self.path = "/login.html" if not self._authorized_via_cookie() else "/dashboard.html"
+            self.path = "/login.html" if not self._authorized() else "/dashboard.html"
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
 
         if parsed.path == "/files":
@@ -91,7 +165,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 return
             files = []
             for f in Path(WORK_DIR).rglob("*"):
-                if f.is_file() and ".git" not in str(f):
+                if f.is_file() and ".git" not in str(f) and "build" not in str(f):
                     files.append({"name": str(f.relative_to(WORK_DIR)), "size": f.stat().st_size})
             self._send_json(200, files)
             return
@@ -114,12 +188,90 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(404, {"error": "Không tìm thấy file"})
             return
 
-        # Static assets (css/js nếu có), chặn truy cập file hệ thống ngoài thư mục web
-        return http.server.SimpleHTTPRequestHandler.do_GET(self)
+        if parsed.path == "/download":
+            if not self._require_auth():
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            filename = params.get("file", ["dns_sniffer.bin"])[0]
+            if not filename.endswith(".bin"):
+                self._send_json(400, {"error": "Chỉ cho phép tải file .bin"})
+                return
+            try:
+                filepath = safe_path("build/" + filename)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            if not os.path.exists(filepath):
+                self._send_json(404, {"error": "Không tìm thấy file firmware"})
+                return
+            try:
+                with open(filepath, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f"attachment; filename={filename.split('/')[-1]}")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
 
-    def _authorized_via_cookie(self):
-        # Cho phép mở dashboard.html nếu trình duyệt có cookie hợp lệ; JS sẽ tự kiểm tra lại qua API
-        return False
+        if parsed.path == "/check_build_files":
+            if not self._require_auth():
+                return
+            build_dir = Path(WORK_DIR) / "build"
+            files = []
+            check_files = [
+                ("dns_sniffer.bin", "Firmware"),
+                ("partition_table/partition-table.bin", "Partition Table"),
+                ("bootloader/bootloader.bin", "Bootloader")
+            ]
+            for rel_path, display_name in check_files:
+                full_path = build_dir / rel_path
+                files.append({
+                    "name": rel_path,
+                    "display_name": display_name,
+                    "size": full_path.stat().st_size if full_path.exists() else 0,
+                    "exists": full_path.exists()
+                })
+            for f in build_dir.rglob("*.bin"):
+                rel = str(f.relative_to(build_dir))
+                if rel not in [f["name"] for f in files]:
+                    files.append({
+                        "name": rel,
+                        "display_name": os.path.basename(rel),
+                        "size": f.stat().st_size,
+                        "exists": True
+                    })
+            self._send_json(200, {"files": files})
+            return
+
+        try:
+            if parsed.path.startswith("/.") or "/." in parsed.path:
+                self.send_response(403)
+                self.end_headers()
+                return
+            with open(parsed.path[1:], "rb") as f:
+                content = f.read()
+                self.send_response(200)
+                if parsed.path.endswith(".html"):
+                    self.send_header("Content-Type", "text/html")
+                elif parsed.path.endswith(".css"):
+                    self.send_header("Content-Type", "text/css")
+                elif parsed.path.endswith(".js"):
+                    self.send_header("Content-Type", "application/javascript")
+                else:
+                    self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+        except Exception:
+            self.send_response(500)
+            self.end_headers()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -159,6 +311,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
+                ensure_esp_project()
                 result = subprocess.run(
                     ["arduino-cli", "compile", "--fqbn", fqbn, "--output-dir", "build", "."],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
@@ -237,9 +390,11 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    ensure_esp_project()
     if not WEB_PASSWORD:
-        print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt — server sẽ từ chối mọi đăng nhập.")
+        print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt")
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    server = http.server.HTTPServer(("0.0.0.0", 3000), APIHandler)
-    print("Web IDE server (có xác thực) đang chạy tại port 3000")
+    PORT = int(os.environ.get("PORT", 9999))  # 👈 PORT 9999
+    server = http.server.HTTPServer(("0.0.0.0", PORT), APIHandler)
+    print(f"✅ Web IDE server đang chạy tại port {PORT}")
     server.serve_forever()

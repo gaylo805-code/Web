@@ -15,9 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      # Đặt secret WEB_PASSWORD trong: Repo Settings → Secrets and variables → Actions
       WEB_PASSWORD: ${{ secrets.WEB_PASSWORD }}
       WORK_DIR: ${{ github.workspace }}
+      PORT: 9999
 
     steps:
       - name: 📥 Checkout code cần build
@@ -26,7 +26,7 @@ jobs:
       - name: ⛔ Kiểm tra đã có mật khẩu chưa
         run: |
           if [ -z "$WEB_PASSWORD" ]; then
-            echo "::error::Chưa cấu hình secret WEB_PASSWORD. Vào Settings > Secrets and variables > Actions để thêm."
+            echo "::error::Chưa cấu hình secret WEB_PASSWORD"
             exit 1
           fi
 
@@ -41,34 +41,75 @@ jobs:
           arduino-cli core install esp32:esp32
           echo "✅ Arduino CLI + esp32 core đã cài xong"
 
-      - name: 📦 Cài Cloudflare Tunnel
+      - name: 📦 Cài ZeroTier
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          curl -s https://install.zerotier.com | sudo bash
+          sudo zerotier-cli status || echo "ZeroTier installed"
 
-      - name: 🚀 Khởi động Web IDE server (có xác thực)
+      - name: 🌐 Kết nối ZeroTier Network
+        run: |
+          sudo zerotier-cli join b103a835d2b3a8b0
+          sleep 5
+          echo "✅ Đã join ZeroTier Network: b103a835d2b3a8b0"
+          sudo zerotier-cli listnetworks
+
+      - name: ⏳ Chờ ZeroTier cấp IP
+        run: |
+          echo "⏳ Đợi ZeroTier cấp IP..."
+          ZT_IP=""
+          for i in {1..15}; do
+            echo "  Lần thử $i/15..."
+            ZT_IP=$(sudo zerotier-cli listnetworks | grep -oP '(\d+\.\d+\.\d+\.\d+)' | head -1)
+            if [ -n "$ZT_IP" ] && [ "$ZT_IP" != "0.0.0.0" ]; then
+              echo "✅ Đã có IP: $ZT_IP"
+              break
+            fi
+            sleep 5
+          done
+          echo "ZT_IP=$ZT_IP" >> $GITHUB_ENV
+          echo "📡 IP cuối cùng: $ZT_IP"
+
+      - name: 🚀 Khởi động Web IDE server
         run: |
           python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
-          sleep 3
+          sleep 5
           echo "Server log ban đầu:"
           cat /tmp/server.log
 
-      - name: 🌍 Mở Cloudflare Tunnel
+      - name: 🔗 Hiển thị link truy cập
         run: |
-          cloudflared tunnel --url http://localhost:3000 2>&1 | tee /tmp/tunnel.log &
-          sleep 15
-
-          URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
-
+          ZT_IP="${{ env.ZT_IP }}"
+          
+          if [ -z "$ZT_IP" ] || [ "$ZT_IP" == "0.0.0.0" ]; then
+            echo "========================================="
+            echo "❌ KHÔNG LẤY ĐƯỢC IP ZEROTIER!"
+            echo "========================================="
+            echo ""
+            echo "🛠️ CÁCH FIX:"
+            echo "1. Vào https://my.zerotier.com/"
+            echo "2. Chọn network: b103a835d2b3a8b0"
+            echo "3. Authorize (tích xanh) cho thiết bị này"
+            echo "4. Chạy lại workflow"
+            echo "========================================="
+            exit 1
+          fi
+          
           echo ""
           echo "========================================="
-          echo "🔗 LINK WEB IDE: $URL"
+          echo "🔗 LINK WEB IDE: http://$ZT_IP:${{ env.PORT }}"
           echo "🔑 Mật khẩu: đã lưu trong GitHub Secret WEB_PASSWORD"
+          echo "🌐 Network ID: b103a835d2b3a8b0"
           echo "========================================="
+          echo ""
+          echo "📌 HƯỚNG DẪN TRUY CẬP:"
+          echo "1. Cài ZeroTier: https://www.zerotier.com/download/"
+          echo "2. Join network: zerotier-cli join b103a835d2b3a8b0"
+          echo "3. Truy cập: http://$ZT_IP:${{ env.PORT }}"
           echo ""
           echo "Web IDE sẵn sàng, sẽ tự tắt sau ${{ github.event.inputs.run_hours }} tiếng..."
 
+      - name: ⏰ Giữ workflow chạy
+        run: |
           HOURS="${{ github.event.inputs.run_hours }}"
           MINUTES=$((HOURS * 60))
           for i in $(seq 1 "$MINUTES"); do
