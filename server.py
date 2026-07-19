@@ -19,29 +19,50 @@ WORK_DIR = os.environ.get("WORK_DIR", os.getcwd())
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 SESSION_TTL = 6 * 3600  # 6 tiếng
 
-# Danh sách board hợp lệ cho build (tránh nhận chuỗi tùy ý) — FQBN của arduino-cli
-ALLOWED_TARGETS = {
-    "esp32": "esp32:esp32:esp32",
-    "esp32s2": "esp32:esp32:esp32s2",
-    "esp32s3": "esp32:esp32:esp32s3",
-    "esp32c3": "esp32:esp32:esp32c3",
-}
+# Danh sách target hợp lệ cho build (tránh nhận chuỗi tùy ý) — dùng cho idf.py set-target
+ALLOWED_TARGETS = {"esp32", "esp32s2", "esp32s3", "esp32c3"}
+
+# Lệnh chẩn đoán cố định — KHÔNG nhận chuỗi lệnh tùy ý từ người dùng.
+# Đây là biện pháp an toàn: server chạy công khai, không cho phép RCE tự do
+# dù đã có mật khẩu, để tránh máy bị lợi dụng nếu mật khẩu rò rỉ.
+# Đường dẫn cài ESP-IDF (khớp với bước cài trong workflow)
+IDF_EXPORT = "source $HOME/esp-idf/export.sh"
+
+
+def run_idf(shell_cmd, cwd=None, timeout=600):
+    """Chạy lệnh trong môi trường đã (cố gắng) source export.sh của ESP-IDF.
+    Nếu export.sh chưa tồn tại/lỗi, vẫn tiếp tục chạy lệnh (để các lệnh không cần idf.py như
+    list_files, disk_space vẫn hoạt động bình thường)."""
+    return subprocess.run(
+        ["bash", "-lc", f"( {IDF_EXPORT} ) > /dev/null 2>&1; {shell_cmd}"],
+        cwd=cwd or WORK_DIR, capture_output=True, text=True, timeout=timeout,
+    )
+
 
 # Lệnh chẩn đoán cố định — KHÔNG nhận chuỗi lệnh tùy ý từ người dùng.
 # Đây là biện pháp an toàn: server chạy công khai, không cho phép RCE tự do
 # dù đã có mật khẩu, để tránh máy bị lợi dụng nếu mật khẩu rò rỉ.
 DIAG_COMMANDS = {
-    "arduino_version": ["arduino-cli", "version"],
-    "list_boards": ["arduino-cli", "board", "listall"],
-    "list_cores": ["arduino-cli", "core", "list"],
-    "list_files": ["find", ".", "-maxdepth", "3", "-type", "f"],
-    "disk_space": ["df", "-h", "."],
-    "build_dir": ["ls", "-la", "build"],
-    "sketch_check": ["arduino-cli", "compile", "--dry-run", "--fqbn", "esp32:esp32:esp32", "."],
+    "idf_version": "idf.py --version",
+    "list_targets": "idf.py --list-targets",
+    "menuconfig_check": "idf.py set-target esp32 2>&1 | tail -20",
+    "list_files": "find . -maxdepth 3 -type f -not -path './.git/*'",
+    "disk_space": "df -h .",
+    "build_dir": "ls -la build 2>&1 || echo 'Chưa có thư mục build'",
+    "size_info": "idf.py size 2>&1 || echo 'Chưa build lần nào'",
 }
 
 # token -> hết hạn (epoch)
 _sessions = {}
+
+# Chống brute-force: ip -> [timestamps các lần login sai]
+_failed_logins = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 60
+
+# Lịch sử build gần nhất (lưu trong RAM, mất khi restart server)
+_build_history = []
+MAX_HISTORY = 20
 
 
 def new_session():
@@ -69,23 +90,42 @@ def safe_path(name: str) -> str:
     return str(candidate)
 
 
-def ensure_arduino_sketch():
-    """Đảm bảo có sẵn file .ino khớp tên thư mục (yêu cầu bắt buộc của Arduino CLI)."""
+def ensure_esp_idf_project():
+    """Đảm bảo có cấu trúc project ESP-IDF tối thiểu (CMakeLists.txt + main/) nếu chưa có."""
     base = Path(WORK_DIR).resolve()
-    sketch_name = base.name + ".ino"
-    sketch_file = base / sketch_name
-    if not sketch_file.exists():
-        sketch_file.write_text(
-            "// Sketch mặc định - sửa hoặc upload file .ino để thay thế\n"
-            "void setup() {\n"
-            "  Serial.begin(115200);\n"
-            "  Serial.println(\"ESP32 sẵn sàng\");\n"
-            "}\n\n"
-            "void loop() {\n"
-            "  delay(2000);\n"
+
+    cmake_file = base / "CMakeLists.txt"
+    if not cmake_file.exists():
+        cmake_file.write_text(
+            "cmake_minimum_required(VERSION 3.16)\n\n"
+            "include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n"
+            f"project({base.name.replace('-', '_')})\n"
+        )
+        print("✅ Đã tạo CMakeLists.txt")
+
+    main_dir = base / "main"
+    main_dir.mkdir(exist_ok=True)
+
+    main_cmake = main_dir / "CMakeLists.txt"
+    if not main_cmake.exists():
+        main_cmake.write_text('idf_component_register(SRCS "main.c"\n                       INCLUDE_DIRS ".")\n')
+        print("✅ Đã tạo main/CMakeLists.txt")
+
+    main_c = main_dir / "main.c"
+    if not main_c.exists():
+        main_c.write_text(
+            "#include <stdio.h>\n"
+            '#include "freertos/FreeRTOS.h"\n'
+            '#include "freertos/task.h"\n\n'
+            "void app_main(void)\n"
+            "{\n"
+            "    while (1) {\n"
+            '        printf("Hello from ESP32!\\n");\n'
+            "        vTaskDelay(pdMS_TO_TICKS(1000));\n"
+            "    }\n"
             "}\n"
         )
-        print(f"✅ Đã tạo {sketch_name}")
+        print("✅ Đã tạo main/main.c")
 
 
 class APIHandler(http.server.SimpleHTTPRequestHandler):
@@ -188,34 +228,43 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, files)
             return
 
-        if parsed.path == "/check_build_files":
+        if parsed.path == "/build/history":
             if not self._require_auth():
                 return
-            build_dir = Path(WORK_DIR) / "build"
-            files = []
-            check_files = [
-                ("dns_sniffer.bin", "Firmware"),
-                ("partition_table/partition-table.bin", "Partition Table"),
-                ("bootloader/bootloader.bin", "Bootloader")
-            ]
-            for rel_path, display_name in check_files:
-                full_path = build_dir / rel_path
-                files.append({
-                    "name": rel_path,
-                    "display_name": display_name,
-                    "size": full_path.stat().st_size if full_path.exists() else 0,
-                    "exists": full_path.exists()
-                })
-            for f in build_dir.rglob("*.bin"):
-                rel = str(f.relative_to(build_dir))
-                if rel not in [f["name"] for f in files]:
-                    files.append({
-                        "name": rel,
-                        "display_name": os.path.basename(rel),
-                        "size": f.stat().st_size,
-                        "exists": True
-                    })
-            self._send_json(200, {"files": files})
+            self._send_json(200, _build_history)
+            return
+
+        if parsed.path == "/library/list":
+            if not self._require_auth():
+                return
+            try:
+                comp_dir = Path(WORK_DIR) / "managed_components"
+                names = [d.name for d in comp_dir.iterdir() if d.is_dir()] if comp_dir.is_dir() else []
+                self._send_json(200, names)
+            except Exception:
+                self._send_json(200, [])
+            return
+
+        if parsed.path == "/export":
+            if not self._require_auth():
+                return
+            try:
+                import io, zipfile
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in Path(WORK_DIR).rglob("*"):
+                        rel = str(f.relative_to(WORK_DIR))
+                        if f.is_file() and not rel.startswith((".git/", "build/", "__pycache__/")):
+                            zf.write(f, rel)
+                content = buf.getvalue()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", "attachment; filename=project-export.zip")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
             return
 
         try:
@@ -254,15 +303,27 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
             data = {}
 
         if parsed.path == "/login":
+            ip = self.client_address[0]
+            now = time.time()
+            attempts = [t for t in _failed_logins.get(ip, []) if now - t < LOGIN_LOCKOUT_SECONDS]
+            _failed_logins[ip] = attempts
+            if len(attempts) >= MAX_LOGIN_ATTEMPTS:
+                wait = int(LOGIN_LOCKOUT_SECONDS - (now - attempts[0]))
+                self._send_json(429, {"error": f"Sai quá nhiều lần, thử lại sau {wait}s"})
+                return
+
             password = data.get("password", "")
             if not WEB_PASSWORD:
                 self._send_json(500, {"error": "Server chưa cấu hình WEB_PASSWORD"})
                 return
             if secrets.compare_digest(password, WEB_PASSWORD):
+                _failed_logins.pop(ip, None)
                 token = new_session()
                 self._send_json(200, {"token": token, "expires_in": SESSION_TTL})
             else:
-                self._send_json(401, {"error": "Sai mật khẩu"})
+                _failed_logins.setdefault(ip, []).append(now)
+                remaining = MAX_LOGIN_ATTEMPTS - len(_failed_logins[ip])
+                self._send_json(401, {"error": f"Sai mật khẩu (còn {max(remaining,0)} lần thử)"})
             return
 
         if parsed.path == "/logout":
@@ -277,22 +338,46 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/build":
             target = data.get("target", "esp32")
-            fqbn = ALLOWED_TARGETS.get(target)
-            if fqbn is None:
+            if target not in ALLOWED_TARGETS:
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
-                ensure_arduino_sketch()
-                result = subprocess.run(
-                    ["arduino-cli", "compile", "--fqbn", fqbn, "--output-dir", "build", "."],
-                    cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
-                )
+                ensure_esp_idf_project()
+                start = time.time()
+                result = run_idf(f"idf.py -B build set-target {target} && idf.py -B build build", timeout=900)
                 success = result.returncode == 0
+                duration = round(time.time() - start, 1)
+
+                _build_history.insert(0, {
+                    "time": time.strftime("%H:%M:%S"),
+                    "target": target,
+                    "success": success,
+                    "duration": duration,
+                })
+                del _build_history[MAX_HISTORY:]
+
                 self._send_json(200, {
                     "success": success,
                     "output": result.stdout[-4000:],
                     "error": result.stderr[-2000:] if not success else "",
                     "bin": "build/*.bin" if success else "",
+                    "duration": duration,
+                })
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
+        if parsed.path == "/library/install":
+            name = data.get("name", "").strip()
+            if not name or not __import__("re").match(r"^[A-Za-z0-9_./\-]{1,80}$", name):
+                self._send_json(400, {"error": "Tên component không hợp lệ (định dạng: namespace/component)"})
+                return
+            try:
+                result = run_idf(f"idf.py add-dependency '{name}'", timeout=180)
+                success = result.returncode == 0
+                self._send_json(200, {
+                    "success": success,
+                    "output": (result.stdout + result.stderr)[-2000:],
                 })
             except Exception as e:
                 self._send_json(500, {"success": False, "error": str(e)})
@@ -316,7 +401,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"error": f"Lệnh không hợp lệ. Cho phép: {sorted(DIAG_COMMANDS)}"})
                 return
             try:
-                result = subprocess.run(cmd, cwd=WORK_DIR, capture_output=True, text=True, timeout=60)
+                result = run_idf(cmd, timeout=60)
                 self._send_json(200, {
                     "success": result.returncode == 0,
                     "output": (result.stdout + result.stderr)[-4000:],
@@ -377,7 +462,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ensure_arduino_sketch()
+    ensure_esp_idf_project()
     if not WEB_PASSWORD:
         print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt")
     os.chdir(os.path.dirname(os.path.abspath(__file__)))

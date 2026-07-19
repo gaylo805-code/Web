@@ -31,25 +31,36 @@ jobs:
           fi
           echo "✅ WEB_PASSWORD đã được cấu hình"
 
-      - name: 🔧 Cài Arduino CLI + core ESP32
+      - name: 🐍 Cài Python 3.8 (ESP-IDF v4.1 không tương thích Python mới)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
+      - name: 🔧 Cài ESP-IDF v4.1
         run: |
           set -e
           sudo apt update -qq
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
-          export PATH="/usr/local/bin:$PATH"
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          arduino-cli version
-          arduino-cli config init --overwrite
-          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
-          echo "✅ Arduino CLI + esp32 core đã cài xong"
+          sudo apt install -y -qq git wget flex bison gperf python3-pip \
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
+          cd "$HOME"
+          git clone -b v4.1 --depth 1 --recursive https://github.com/espressif/esp-idf.git
+          cd esp-idf
+          IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env" ./install.sh esp32
+          source ./export.sh
+          idf.py --version
+          echo "✅ ESP-IDF v4.1 đã cài xong"
 
-      - name: 🔍 Kiểm tra sketch build thử trước khi mở web
+      - name: 🔍 Build thử trước khi mở web
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir build "${{ github.workspace }}" || {
-            echo "::warning::Sketch mặc định build lỗi, nhưng vẫn tiếp tục mở Web IDE để bạn sửa code."
-          }
+          source "$HOME/esp-idf/export.sh"
+          cd "${{ github.workspace }}"
+          if [ ! -f CMakeLists.txt ]; then
+            echo "⚠️ Chưa có CMakeLists.txt, server sẽ tự tạo project mẫu khi khởi động"
+          else
+            idf.py -B build set-target esp32 && idf.py -B build build || {
+              echo "::warning::Build thử lỗi, nhưng vẫn tiếp tục mở Web IDE để bạn sửa code."
+            }
+          fi
 
       - name: 📦 Cài Cloudflared
         run: |

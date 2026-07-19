@@ -68,6 +68,7 @@ async function login() {
     const data = await res.json();
     if (res.ok && data.token) {
       sessionStorage.setItem('esp32_ide_token', data.token);
+      sessionStorage.setItem('esp32_ide_expires', String(Date.now() + (data.expires_in || 0) * 1000));
       window.location.href = '/dashboard.html';
     } else {
       errorMsg.textContent = data.error || 'Đăng nhập thất bại';

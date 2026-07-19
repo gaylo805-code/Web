@@ -143,17 +143,59 @@ textarea{
 .build-file-item .name{color:#64ffda;font-weight:500}
 .build-file-item .size{color:#8892b0;font-size:0.8em}
 </style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<style>
+body.light-theme{background:linear-gradient(135deg,#f0f2f8 0%,#e8e4f5 50%,#f0f2f8 100%);color:#1a1f3a}
+body.light-theme .card{background:rgba(255,255,255,0.85);border-color:#d0d5e8}
+body.light-theme .terminal{background:#1a1f3a}
+body.light-theme .status-bar{background:rgba(255,255,255,0.9);border-top-color:#d0d5e8}
+.CodeMirror{height:260px;border-radius:10px;font-size:14px}
+.tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.tab{
+  padding:6px 14px;background:rgba(0,0,0,0.3);border-radius:8px 8px 0 0;
+  cursor:pointer;font-size:0.85em;border:1px solid #2a2f4a;border-bottom:none;
+}
+.tab.active{background:#7c4dff;color:white}
+.session-timer{font-size:0.85em;color:#8892b0}
+.history-item{display:flex;justify-content:space-between;padding:8px;background:rgba(0,0,0,0.2);border-radius:8px;margin:4px 0;font-size:0.85em}
+.history-item.success{border-left:3px solid #69f0ae}
+.history-item.fail{border-left:3px solid #ff5252}
+
+/* Server console style */
+.server-console{
+  border:1px solid #2effa0;
+  box-shadow:0 20px 60px rgba(46,255,160,0.15), inset 0 0 40px rgba(46,255,160,0.03);
+  position:relative;
+}
+.server-console::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,#2effa0,#7c4dff,#2effa0);
+  background-size:200% 100%;
+  animation:scanline 3s linear infinite;
+  border-radius:20px 20px 0 0;
+}
+@keyframes scanline{0%{background-position:0% 0}100%{background-position:200% 0}}
+.server-console h1{font-family:'Courier New',monospace;letter-spacing:1px}
+.server-console .subtitle{color:#b8c4e0;font-family:'Courier New',monospace;font-size:0.85em}
+.badge.live{background:rgba(46,255,160,0.2);border:1px solid #2effa0}
+.badge.live::before{content:'● ';color:#2effa0;animation:pulse 1.5s infinite}
+</style>
 </head>
 <body>
 <div class="container">
 
-<div class="header">
-  <button class="logout-btn" onclick="logout()">🚪 Đăng xuất</button>
-  <h1>🔍 ESP32 DNS Sniffer - Web IDE</h1>
-  <p>Build · Upload · Quản lý file</p>
-  <span class="badge">🔧 ESP-IDF</span>
+<div class="header server-console">
+  <button class="logout-btn" onclick="logout()" style="right:20px">🚪 Đăng xuất</button>
+  <button class="logout-btn" onclick="toggleTheme()" style="right:140px">🌗 Giao diện</button>
+  <h1>⚙️ ESP32 Build Server</h1>
+  <p class="subtitle">ESP-IDF v4.1 · Console điều khiển build từ xa</p>
+  <span class="badge">🔧 ESP-IDF v4.1</span>
   <span class="badge">💾 ESP32</span>
-  <span class="badge" id="statusBadge">🟢 Online</span>
+  <span class="badge live" id="statusBadge">Server Online</span>
+  <div class="session-timer" id="sessionTimer" style="margin-top:8px"></div>
 </div>
 
 <div class="grid">
@@ -166,7 +208,11 @@ textarea{
     <p>Kéo thả file vào đây hoặc Click để chọn</p>
     <p style="color:#8892b0;font-size:0.9em">Hỗ trợ: .c, .h, .cpp, .txt, .csv, .cmake</p>
   </div>
-  <input type="file" id="fileInput" multiple style="display:none" accept=".c,.h,.cpp,.txt,.csv,.cmake">
+  <input type="file" id="fileInput" multiple style="display:none" accept=".c,.h,.cpp,.txt,.csv,.cmake,.ino">
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <input type="text" id="fileSearch" placeholder="🔍 Tìm file..." oninput="refreshFileList()" style="flex:1">
+    <button class="btn btn-success" style="padding:10px 14px;font-size:0.85em" onclick="createNewFile()">➕ File mới</button>
+  </div>
   <div id="fileList"></div>
 </div>
 
@@ -184,21 +230,35 @@ textarea{
     <button class="btn btn-danger" onclick="cleanBuild()">🧹 Clean</button>
   </div>
   <div id="buildStatus" style="margin-top:10px;padding:10px;border-radius:8px;display:none"></div>
-  <div id="buildFilesSection" style="margin-top:15px;display:none">
-    <h3 style="color:#64ffda;font-size:1em;margin-bottom:10px">📦 File đã build:</h3>
-    <div id="buildFilesList"></div>
-  </div>
 </div>
 
 <div class="card" style="grid-column:span 2">
   <div class="icon">📝</div>
   <h2>Code Editor</h2>
+  <div class="tabs" id="fileTabs"></div>
   <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-    <input type="text" id="fileName" placeholder="sketch.ino" value="sketch.ino" style="flex:1;min-width:200px">
+    <input type="text" id="fileName" placeholder="main/main.c" value="main/main.c" style="flex:1;min-width:200px">
     <button class="btn btn-primary" onclick="loadFile()">📂 Mở</button>
     <button class="btn btn-success" onclick="saveFile()">💾 Lưu</button>
   </div>
-  <textarea id="codeEditor" placeholder="// Viết code ESP32 ở đây..."></textarea>
+  <textarea id="codeEditor"></textarea>
+</div>
+
+<div class="card">
+  <div class="icon">📚</div>
+  <h2>Component Manager (ESP-IDF)</h2>
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <input type="text" id="libName" placeholder="namespace/component (vd: espressif/mdns)">
+    <button class="btn btn-primary" onclick="installLibrary()">➕ Cài</button>
+  </div>
+  <div id="libList" style="font-size:0.85em;color:#8892b0">Đang tải...</div>
+</div>
+
+<div class="card">
+  <div class="icon">📤</div>
+  <h2>Xuất Project</h2>
+  <p style="color:#8892b0;font-size:0.85em;margin-bottom:15px">Tải toàn bộ project (trừ build/, .git) dưới dạng .zip</p>
+  <button class="btn btn-primary" onclick="exportProject()">⬇️ Tải project.zip</button>
 </div>
 
 <div class="card" style="grid-column:span 2">
@@ -217,13 +277,13 @@ textarea{
     Các lệnh cố định để debug nhanh khi build lỗi — không nhận lệnh tự do vì lý do an toàn.
   </p>
   <div style="display:flex;flex-wrap:wrap;gap:8px">
-    <button class="btn btn-warning" onclick="runDiag('arduino_version')">📦 Phiên bản arduino-cli</button>
-    <button class="btn btn-warning" onclick="runDiag('list_boards')">🔌 Danh sách board</button>
-    <button class="btn btn-warning" onclick="runDiag('list_cores')">⚙️ Core đã cài</button>
+    <button class="btn btn-warning" onclick="runDiag('idf_version')">📦 Phiên bản idf.py</button>
+    <button class="btn btn-warning" onclick="runDiag('list_targets')">🔌 Danh sách target</button>
+    <button class="btn btn-warning" onclick="runDiag('menuconfig_check')">⚙️ Kiểm tra set-target</button>
     <button class="btn btn-warning" onclick="runDiag('list_files')">📁 Cây thư mục</button>
     <button class="btn btn-warning" onclick="runDiag('build_dir')">🗂️ Nội dung build/</button>
     <button class="btn btn-warning" onclick="runDiag('disk_space')">💽 Dung lượng đĩa</button>
-    <button class="btn btn-warning" onclick="runDiag('sketch_check')">🔍 Kiểm tra sketch (dry-run)</button>
+    <button class="btn btn-warning" onclick="runDiag('size_info')">📏 Kích thước firmware (idf.py size)</button>
   </div>
 </div>
 
@@ -242,6 +302,12 @@ textarea{
   <div id="buildFilesList" style="margin-top:12px"></div>
 </div>
 
+<div class="card" style="grid-column:span 2">
+  <div class="icon">📜</div>
+  <h2>Lịch sử Build</h2>
+  <div id="historyList" style="font-size:0.85em;color:#8892b0">Chưa có lần build nào</div>
+</div>
+
 </div>
 </div>
 
@@ -257,6 +323,8 @@ const token = sessionStorage.getItem('esp32_ide_token');
 if (!token) {
   window.location.href = '/login.html';
 }
+
+let sessionExpiresAt = parseInt(sessionStorage.getItem('esp32_ide_expires') || '0', 10);
 
 function authHeaders(extra) {
   return Object.assign({'Authorization': 'Bearer ' + token}, extra || {});
@@ -280,6 +348,40 @@ function logout() {
   });
 }
 
+// Đếm ngược phiên đăng nhập
+function updateSessionTimer() {
+  const el = document.getElementById('sessionTimer');
+  if (!sessionExpiresAt) { el.textContent = ''; return; }
+  const remain = Math.max(0, Math.floor((sessionExpiresAt - Date.now()) / 1000));
+  const h = Math.floor(remain / 3600), m = Math.floor((remain % 3600) / 60), s = remain % 60;
+  el.textContent = `⏳ Phiên hết hạn sau: ${h}h ${m}m ${s}s`;
+  if (remain <= 0) {
+    sessionStorage.removeItem('esp32_ide_token');
+    window.location.href = '/login.html';
+  }
+}
+setInterval(updateSessionTimer, 1000);
+
+// Theme sáng/tối
+function toggleTheme() {
+  document.body.classList.toggle('light-theme');
+  const isLight = document.body.classList.contains('light-theme');
+  localStorage.setItem('esp32_ide_theme', isLight ? 'light' : 'dark');
+  if (editor) editor.setOption('theme', isLight ? 'default' : 'dracula');
+}
+if (localStorage.getItem('esp32_ide_theme') === 'light') {
+  document.body.classList.add('light-theme');
+}
+
+// CodeMirror editor
+let editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
+  mode: 'text/x-c++src',
+  theme: document.body.classList.contains('light-theme') ? 'default' : 'dracula',
+  lineNumbers: true,
+  indentUnit: 2,
+  tabSize: 2,
+});
+
 const uploadZone = document.getElementById('uploadZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
@@ -300,7 +402,7 @@ function handleFiles(files) {
       const res = await apiFetch('/upload', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: 'main/' + file.name, content: e.target.result})
+        body: JSON.stringify({name: file.name, content: e.target.result})
       });
       const data = await res.json();
       showToast(data.message || 'Upload OK', res.ok ? 'success' : 'error');
@@ -310,10 +412,14 @@ function handleFiles(files) {
   });
 }
 
+let _allFiles = [];
+
 async function refreshFileList() {
   const res = await apiFetch('/files');
-  const files = await res.json();
-  fileList.innerHTML = files.map(f => `
+  _allFiles = await res.json();
+  const q = (document.getElementById('fileSearch').value || '').toLowerCase();
+  const filtered = q ? _allFiles.filter(f => f.name.toLowerCase().includes(q)) : _allFiles;
+  fileList.innerHTML = filtered.map(f => `
     <div class="file-item">
       <span class="name">📄 ${f.name}</span>
       <span class="size">${formatSize(f.size)}</span>
@@ -322,7 +428,21 @@ async function refreshFileList() {
         <button class="btn btn-danger" style="padding:5px 10px;font-size:0.8em" onclick="deleteFile('${f.name}')">🗑️</button>
       </div>
     </div>
-  `).join('');
+  `).join('') || '<p style="color:#8892b0;font-size:0.85em">Không có file nào khớp</p>';
+}
+
+async function createNewFile() {
+  const name = prompt('Tên file mới (vd: helper.h):');
+  if (!name) return;
+  const res = await apiFetch('/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, content: ''})
+  });
+  const data = await res.json();
+  showToast(data.message || data.error, res.ok ? 'success' : 'error');
+  refreshFileList();
+  if (res.ok) editFile(name);
 }
 
 function formatSize(bytes) {
@@ -331,21 +451,102 @@ function formatSize(bytes) {
   return (bytes/(1024*1024)).toFixed(1) + ' MB';
 }
 
+// --- Tabs: các file đã mở gần đây ---
+let openTabs = [];
+
+function renderTabs() {
+  const container = document.getElementById('fileTabs');
+  const current = document.getElementById('fileName').value;
+  container.innerHTML = openTabs.map(name => `
+    <div class="tab ${name === current ? 'active' : ''}" onclick="editFile('${name}')">
+      ${name} <span onclick="event.stopPropagation();closeTab('${name}')" style="opacity:0.6"> ✕</span>
+    </div>
+  `).join('');
+}
+
+function closeTab(name) {
+  openTabs = openTabs.filter(t => t !== name);
+  renderTabs();
+}
+
+// --- Library Manager ---
+async function refreshLibraries() {
+  try {
+    const res = await apiFetch('/library/list');
+    const libs = await res.json();
+    const el = document.getElementById('libList');
+    el.innerHTML = libs.length
+      ? libs.map(l => `<div>📚 ${l}</div>`).join('')
+      : 'Chưa cài thư viện nào';
+  } catch (e) {
+    document.getElementById('libList').textContent = 'Không tải được danh sách';
+  }
+}
+
+async function installLibrary() {
+  const name = document.getElementById('libName').value.trim();
+  if (!name) return;
+  appendTerminal(`📚 Cài thư viện: ${name}...`, 'cmd');
+  const res = await apiFetch('/library/install', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  const data = await res.json();
+  appendTerminal(data.output || data.error || '', data.success ? 'success' : 'error');
+  showToast(data.success ? 'Đã cài thư viện' : (data.error || 'Cài thất bại'), data.success ? 'success' : 'error');
+  refreshLibraries();
+}
+
+// --- Export project ---
+async function exportProject() {
+  showToast('Đang chuẩn bị file zip...', 'success');
+  const res = await apiFetch('/export');
+  if (!res.ok) {
+    showToast('Xuất project thất bại', 'error');
+    return;
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'project-export.zip';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// --- Build history ---
+async function refreshHistory() {
+  try {
+    const res = await apiFetch('/build/history');
+    const history = await res.json();
+    const el = document.getElementById('historyList');
+    el.innerHTML = history.length
+      ? history.map(h => `
+        <div class="history-item ${h.success ? 'success' : 'fail'}">
+          <span>${h.success ? '✅' : '❌'} ${h.target} — ${h.time}</span>
+          <span>${h.duration}s</span>
+        </div>
+      `).join('')
+      : 'Chưa có lần build nào';
+  } catch (e) {}
+}
+
 async function buildFirmware() {
   const target = document.getElementById('buildTarget').value;
   const btn = document.getElementById('buildBtn');
   const statusDiv = document.getElementById('buildStatus');
-  const filesSection = document.getElementById('buildFilesSection');
-  
+
   btn.disabled = true;
   statusDiv.style.display = 'block';
   statusDiv.innerHTML = '⏳ Đang build... (có thể mất vài phút)';
   statusDiv.style.background = 'rgba(255,215,0,0.2)';
   statusDiv.style.color = '#ffd740';
-  filesSection.style.display = 'none';
-  
+
   appendTerminal(`🔨 Bắt đầu build cho ${target}...`, 'cmd');
-  
+
   try {
     const res = await apiFetch('/build', {
       method: 'POST',
@@ -353,15 +554,14 @@ async function buildFirmware() {
       body: JSON.stringify({target})
     });
     const data = await res.json();
-    
+
     if (data.success) {
       appendTerminal(data.output, 'output');
-      appendTerminal('✅ Build thành công!', 'success');
-      statusDiv.innerHTML = '✅ Build thành công!';
+      appendTerminal(`✅ Build thành công! (${data.duration}s)`, 'success');
+      statusDiv.innerHTML = `✅ Build thành công! (${data.duration}s)`;
       statusDiv.style.background = 'rgba(105,240,174,0.2)';
       statusDiv.style.color = '#69f0ae';
       showToast('Build thành công!', 'success');
-      await checkBuildFiles();
     } else {
       appendTerminal(data.error || data.output || 'Lỗi không xác định', 'error');
       statusDiv.innerHTML = '❌ Build thất bại. Xem log bên dưới.';
@@ -369,6 +569,8 @@ async function buildFirmware() {
       statusDiv.style.color = '#ff5252';
       showToast('Build thất bại!', 'error');
     }
+    await refreshBuildFiles();
+    await refreshHistory();
   } catch (e) {
     appendTerminal('❌ Lỗi: ' + e.message, 'error');
     statusDiv.innerHTML = '❌ Lỗi kết nối: ' + e.message;
@@ -378,78 +580,32 @@ async function buildFirmware() {
   }
 }
 
-async function checkBuildFiles() {
-  try {
-    const res = await apiFetch('/check_build_files');
-    const data = await res.json();
-    const section = document.getElementById('buildFilesSection');
-    const list = document.getElementById('buildFilesList');
-    
-    if (data.files && data.files.some(f => f.exists)) {
-      section.style.display = 'block';
-      list.innerHTML = data.files
-        .filter(f => f.exists)
-        .map(f => `
-          <div class="build-file-item">
-            <div class="info">
-              <span class="name">📄 ${f.display_name}</span>
-              <span class="size">${formatSize(f.size)}</span>
-            </div>
-            <button class="btn btn-download" style="padding:5px 16px;font-size:0.8em" onclick="downloadFile('${f.name}')">⬇️ Tải</button>
-          </div>
-        `).join('');
-    }
-  } catch (e) {
-    console.error('Lỗi kiểm tra file build:', e);
-  }
-}
-
-async function downloadFile(filename) {
-  try {
-    const response = await fetch(`/download?file=${encodeURIComponent(filename)}`, {
-      headers: authHeaders()
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      showToast('Lỗi tải file: ' + (errorData.error || 'Không xác định'), 'error');
-      return;
-    }
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename.split('/').pop();
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-    showToast(`✅ Đang tải ${filename.split('/').pop()}...`, 'success');
-  } catch (e) {
-    showToast('Lỗi tải file: ' + e.message, 'error');
-  }
-}
-
 async function cleanBuild() {
   appendTerminal('🧹 Đang clean build...', 'cmd');
   const res = await apiFetch('/clean', {method: 'POST'});
   const data = await res.json();
   appendTerminal(data.output || 'Đã clean', data.success ? 'success' : 'error');
-  document.getElementById('buildFilesSection').style.display = 'none';
   document.getElementById('buildStatus').style.display = 'none';
-  showToast('Đã clean build', 'info');
+  await refreshBuildFiles();
+  showToast('Đã clean build', 'success');
 }
 
 async function loadFile() {
   const fileName = document.getElementById('fileName').value;
   const res = await apiFetch(`/file?name=${encodeURIComponent(fileName)}`);
   const data = await res.json();
-  document.getElementById('codeEditor').value = data.content || '';
-  if (!res.ok) showToast(data.error, 'error');
+  editor.setValue(data.content || '');
+  if (!res.ok) {
+    showToast(data.error, 'error');
+    return;
+  }
+  if (!openTabs.includes(fileName)) openTabs.push(fileName);
+  renderTabs();
 }
 
 async function saveFile() {
   const fileName = document.getElementById('fileName').value;
-  const content = document.getElementById('codeEditor').value;
+  const content = editor.getValue();
   const res = await apiFetch('/save', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -470,6 +626,7 @@ async function deleteFile(name) {
   const res = await apiFetch(`/delete?name=${encodeURIComponent(name)}`, {method: 'DELETE'});
   const data = await res.json();
   showToast(data.message || data.error, res.ok ? 'success' : 'error');
+  closeTab(name);
   refreshFileList();
 }
 
@@ -563,7 +720,10 @@ setInterval(() => {
 
 refreshFileList();
 refreshBuildFiles();
+refreshLibraries();
+refreshHistory();
+updateSessionTimer();
 document.getElementById('clock').textContent = new Date().toLocaleTimeString('vi-VN');
 </script>
 </body>
-  </html>
+</html>
