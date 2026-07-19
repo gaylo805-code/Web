@@ -1,4 +1,4 @@
-name: 🌐 ESP32 Web IDE (có mật khẩu)
+name: 🌐 ESP32 Web IDE (Cloudflare Tunnel)
 
 on:
   workflow_dispatch:
@@ -26,86 +26,81 @@ jobs:
       - name: ⛔ Kiểm tra đã có mật khẩu chưa
         run: |
           if [ -z "$WEB_PASSWORD" ]; then
-            echo "::error::Chưa cấu hình secret WEB_PASSWORD"
+            echo "::error::Chưa cấu hình secret WEB_PASSWORD. Vào Settings > Secrets and variables > Actions để thêm."
             exit 1
           fi
+          echo "✅ WEB_PASSWORD đã được cấu hình"
 
       - name: 🔧 Cài Arduino CLI + core ESP32
         run: |
+          set -e
           sudo apt update -qq
-          sudo apt install -y -qq python3
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
-          which arduino-cli || echo "❌ arduino-cli vẫn không thấy trong PATH"
-          arduino-cli config init
+          export PATH="/usr/local/bin:$PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          arduino-cli version
+          arduino-cli config init --overwrite
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
           echo "✅ Arduino CLI + esp32 core đã cài xong"
 
-      - name: 📦 Cài ZeroTier
+      - name: 🔍 Kiểm tra sketch build thử trước khi mở web
         run: |
-          curl -s https://install.zerotier.com | sudo bash
-          sudo zerotier-cli status || echo "ZeroTier installed"
+          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir build "${{ github.workspace }}" || {
+            echo "::warning::Sketch mặc định build lỗi, nhưng vẫn tiếp tục mở Web IDE để bạn sửa code."
+          }
 
-      - name: 🌐 Kết nối ZeroTier Network
+      - name: 📦 Cài Cloudflared
         run: |
-          sudo zerotier-cli join b103a835d2b3a8b0
-          sleep 5
-          echo "✅ Đã join ZeroTier Network: b103a835d2b3a8b0"
-          sudo zerotier-cli listnetworks
-
-      - name: ⏳ Chờ ZeroTier cấp IP
-        run: |
-          echo "⏳ Đợi ZeroTier cấp IP..."
-          ZT_IP=""
-          for i in {1..15}; do
-            echo "  Lần thử $i/15..."
-            ZT_IP=$(sudo zerotier-cli listnetworks | grep -oP '(\d+\.\d+\.\d+\.\d+)' | head -1)
-            if [ -n "$ZT_IP" ] && [ "$ZT_IP" != "0.0.0.0" ]; then
-              echo "✅ Đã có IP: $ZT_IP"
-              break
-            fi
-            sleep 5
-          done
-          echo "ZT_IP=$ZT_IP" >> $GITHUB_ENV
-          echo "📡 IP cuối cùng: $ZT_IP"
+          set -e
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
 
       - name: 🚀 Khởi động Web IDE server
         run: |
-          python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
-          sleep 5
-          echo "Server log ban đầu:"
+          nohup python3 "${{ github.workspace }}/server.py" > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          sleep 3
+          echo "--- Server log ---"
           cat /tmp/server.log
-
-      - name: 🔗 Hiển thị link truy cập
-        run: |
-          ZT_IP="${{ env.ZT_IP }}"
-          
-          if [ -z "$ZT_IP" ] || [ "$ZT_IP" == "0.0.0.0" ]; then
-            echo "========================================="
-            echo "❌ KHÔNG LẤY ĐƯỢC IP ZEROTIER!"
-            echo "========================================="
-            echo ""
-            echo "🛠️ CÁCH FIX:"
-            echo "1. Vào https://my.zerotier.com/"
-            echo "2. Chọn network: b103a835d2b3a8b0"
-            echo "3. Authorize (tích xanh) cho thiết bị này"
-            echo "4. Chạy lại workflow"
-            echo "========================================="
+          # Kiểm tra server thật sự sống chưa
+          if ! curl -sf "http://localhost:${{ env.PORT }}/login.html" > /dev/null; then
+            echo "::error::Server không phản hồi trên port ${{ env.PORT }}"
+            cat /tmp/server.log
             exit 1
           fi
-          
+          echo "✅ Server đang chạy tại port ${{ env.PORT }}"
+
+      - name: 🌍 Mở Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel --url "http://localhost:${{ env.PORT }}" > /tmp/tunnel.log 2>&1 &
+          echo "⏳ Đang tạo tunnel..."
+
+          URL=""
+          for i in $(seq 1 20); do
+            sleep 3
+            URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            if [ -n "$URL" ]; then
+              break
+            fi
+            echo "  Lần thử $i/20..."
+          done
+
+          if [ -z "$URL" ]; then
+            echo "::error::Không lấy được link Cloudflare Tunnel"
+            echo "--- Tunnel log ---"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+
           echo ""
           echo "========================================="
-          echo "🔗 LINK WEB IDE: http://$ZT_IP:${{ env.PORT }}"
+          echo "🔗 LINK WEB IDE: $URL"
           echo "🔑 Mật khẩu: đã lưu trong GitHub Secret WEB_PASSWORD"
-          echo "🌐 Network ID: b103a835d2b3a8b0"
           echo "========================================="
-          echo ""
-          echo "📌 HƯỚNG DẪN TRUY CẬP:"
-          echo "1. Cài ZeroTier: https://www.zerotier.com/download/"
-          echo "2. Join network: zerotier-cli join b103a835d2b3a8b0"
-          echo "3. Truy cập: http://$ZT_IP:${{ env.PORT }}"
           echo ""
           echo "Web IDE sẵn sàng, sẽ tự tắt sau ${{ github.event.inputs.run_hours }} tiếng..."
 
@@ -115,5 +110,10 @@ jobs:
           MINUTES=$((HOURS * 60))
           for i in $(seq 1 "$MINUTES"); do
             sleep 60
+            if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
+              echo "::error::Server đã bị crash, dừng workflow sớm"
+              cat /tmp/server.log
+              exit 1
+            fi
             echo "⏰ Đã chạy: ${i} / ${MINUTES} phút"
           done

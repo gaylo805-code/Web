@@ -69,78 +69,23 @@ def safe_path(name: str) -> str:
     return str(candidate)
 
 
-def ensure_esp_project():
-    """Tạo cấu trúc project ESP-IDF nếu chưa có (fix lỗi CMakeLists.txt)"""
+def ensure_arduino_sketch():
+    """Đảm bảo có sẵn file .ino khớp tên thư mục (yêu cầu bắt buộc của Arduino CLI)."""
     base = Path(WORK_DIR).resolve()
-    print(f"📁 Đảm bảo project ESP-IDF trong: {base}")
-
-    cmake_file = base / "CMakeLists.txt"
-    if not cmake_file.exists():
-        cmake_file.write_text("""cmake_minimum_required(VERSION 3.10)
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(dns_sniffer)
-""")
-        print("✅ Đã tạo CMakeLists.txt")
-
-    main_dir = base / "main"
-    main_dir.mkdir(exist_ok=True)
-
-    main_cmake = main_dir / "CMakeLists.txt"
-    if not main_cmake.exists():
-        main_cmake.write_text("""idf_component_register(SRCS "main.c" "dns_sniffer.c")
-""")
-        print("✅ Đã tạo main/CMakeLists.txt")
-
-    main_c = main_dir / "main.c"
-    if not main_c.exists():
-        main_c.write_text("""#include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "dns_sniffer.h"
-
-void app_main(void) {
-    printf("ESP32 DNS Sniffer Started!\\n");
-    init_dns_sniffer();
-    while (1) {
-        printf("Running...\\n");
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-}
-""")
-        print("✅ Đã tạo main/main.c")
-
-    main_h = main_dir / "dns_sniffer.h"
-    if not main_h.exists():
-        main_h.write_text("""#ifndef DNS_SNIFFER_H
-#define DNS_SNIFFER_H
-
-void init_dns_sniffer(void);
-
-#endif
-""")
-        print("✅ Đã tạo main/dns_sniffer.h")
-
-    main_c2 = main_dir / "dns_sniffer.c"
-    if not main_c2.exists():
-        main_c2.write_text("""#include <stdio.h>
-#include "dns_sniffer.h"
-
-void init_dns_sniffer(void) {
-    printf("DNS Sniffer initialized!\\n");
-}
-""")
-        print("✅ Đã tạo main/dns_sniffer.c")
-
-    sdkconfig = base / "sdkconfig"
-    if not sdkconfig.exists():
-        sdkconfig.write_text("""CONFIG_ESP32_REV_MIN=0
-CONFIG_ESP32_REV_MIN_3_0=y
-CONFIG_ESP32_XTAL_FREQ_40=y
-CONFIG_ESP32_PHY_MAX_WIFI_TX_POWER=20
-CONFIG_ESPTOOLPY_FLASHSIZE=4MB
-CONFIG_PARTITION_TABLE_SINGLE_APP=y
-""")
-        print("✅ Đã tạo sdkconfig")
+    sketch_name = base.name + ".ino"
+    sketch_file = base / sketch_name
+    if not sketch_file.exists():
+        sketch_file.write_text(
+            "// Sketch mặc định - sửa hoặc upload file .ino để thay thế\n"
+            "void setup() {\n"
+            "  Serial.begin(115200);\n"
+            "  Serial.println(\"ESP32 sẵn sàng\");\n"
+            "}\n\n"
+            "void loop() {\n"
+            "  delay(2000);\n"
+            "}\n"
+        )
+        print(f"✅ Đã tạo {sketch_name}")
 
 
 class APIHandler(http.server.SimpleHTTPRequestHandler):
@@ -337,7 +282,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"error": f"Target không hợp lệ. Cho phép: {sorted(ALLOWED_TARGETS)}"})
                 return
             try:
-                ensure_esp_project()
+                ensure_arduino_sketch()
                 result = subprocess.run(
                     ["arduino-cli", "compile", "--fqbn", fqbn, "--output-dir", "build", "."],
                     cwd=WORK_DIR, capture_output=True, text=True, timeout=600,
@@ -432,7 +377,7 @@ class APIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ensure_esp_project()
+    ensure_arduino_sketch()
     if not WEB_PASSWORD:
         print("⚠️  CẢNH BÁO: Biến môi trường WEB_PASSWORD chưa được đặt")
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
